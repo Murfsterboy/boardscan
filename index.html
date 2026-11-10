@@ -85,6 +85,8 @@
   .meter{background:#12324a;border:1px solid var(--accent);border-radius:8px;padding:3px 8px;font-size:13px;font-weight:700}
   .tag{border:1px solid var(--line);border-radius:8px;padding:3px 8px;font-size:12px;color:var(--muted)}
   .tag.warnTag{border-color:var(--warn);color:var(--warn)}
+  .switchrow{display:flex;gap:12px;align-items:flex-start;margin:14px 0 0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;color:var(--text);font-size:15px;cursor:pointer}
+  .switchrow input{width:22px;height:22px;margin-top:2px;accent-color:var(--accent);flex:none}
   .saved{display:flex;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line);cursor:pointer}
   .saved img{width:56px;height:56px;object-fit:cover;border-radius:8px;flex:none;background:#000}
   .saved .t{font-weight:600}
@@ -114,6 +116,10 @@
         <button class="btn primary" id="cameraBtn">📷 Take photo</button>
         <button class="btn" id="fileBtn">🖼 Choose photo</button>
       </div>
+      <label class="switchrow" for="detailedChk">
+        <input type="checkbox" id="detailedChk">
+        <span><b>Detailed scan</b><br><span class="small muted">Scans the photo in 4 quarters at full resolution to find more small parts. Slower and about 4× the cost.</span></span>
+      </label>
       <button class="btn block" id="demoBtn" style="margin-top:10px">▶ Try the demo board</button>
       <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
       <input type="file" id="fileInput" accept="image/*" class="hidden">
@@ -160,6 +166,7 @@
       <div class="viewer-tools">
         <button class="toggle on" id="tgSections">Sections</button>
         <button class="toggle on" id="tgParts">Parts</button>
+        <button class="toggle" id="tgAdd">＋ Add part</button>
         <span style="flex:1"></span>
         <button class="toggle" id="zoomOut">−</button>
         <span class="small muted" id="zoomLbl">100%</span>
@@ -172,6 +179,7 @@
           <div id="labels"></div>
         </div>
       </div>
+      <div class="warnbox small hidden" id="addHint" style="margin:0 0 8px">Tap the missed part on the photo (zoom in first for small parts). Tap ＋ Add part again to cancel.</div>
       <p class="small" id="placeNote" style="margin:8px 0 0;color:var(--warn)"></p>
       <p class="small muted" style="margin:8px 0 0">Tap a numbered marker or a part in the list. Turn Parts off to see section names. Outlines are approximate.</p>
     </div>
@@ -442,6 +450,138 @@ Give: a pinout for a diagram; multimeter tests with the exact dial setting and w
 SAFETY: for anything on the mains/primary side, tests must be done powered off with the bulk capacitor discharged. For scope work on the primary side, state clearly that the scope ground clip must never go on mains-referenced circuitry unless the device is fed from an isolation transformer or a differential probe is used.
 British spelling, plain English.`;
 
+/* ---------- detailed scan: 4 overlapping quarters at full resolution ---------- */
+const TILE_SPANS = [[0,575],[425,1000]];   // 0–1000 units, 15% overlap
+const TILE_NAMES = [['top-left','top-right'],['bottom-left','bottom-right']];
+
+function tileCanvas(span){
+  const src=S.fullCanvas, W=src.width, H=src.height;
+  const [x0,x1]=span.x, [y0,y1]=span.y;
+  const sx=x0/1000*W, sy=y0/1000*H, sw=(x1-x0)/1000*W, sh=(y1-y0)/1000*H;
+  const k=Math.min(1, 1568/Math.max(sw,sh));
+  const c=document.createElement('canvas'); c.width=Math.round(sw*k); c.height=Math.round(sh*k);
+  const g=c.getContext('2d'); g.imageSmoothingQuality='high'; g.drawImage(src,sx,sy,sw,sh,0,0,c.width,c.height);
+  return c;
+}
+
+async function scanTiles(note){
+  const jobs=[];
+  for(let r=0;r<2;r++) for(let c=0;c<2;c++){
+    const span={x:TILE_SPANS[c], y:TILE_SPANS[r]}, name=TILE_NAMES[r][c];
+    jobs.push({span,name});
+  }
+  let done=0;
+  const results = await Promise.allSettled(jobs.map(async j=>{
+    const content=[
+      {type:'image', source:{type:'base64', media_type:'image/jpeg', data:b64(tileCanvas(j.span))}},
+      {type:'text', text:`This image is the ${j.name} quarter of a larger circuit board photo (the quarters overlap slightly). ${note?`The board is from: ${note}. `:''}List every component in this quarter. Include parts cut off at the edge only if at least half of the part is visible. Bounding boxes are relative to THIS image.`}
+    ];
+    const res = await getParts(content);
+    done++; $('scanMsg').textContent=`Detailed scan: ${done} of 4 quarters done…`;
+    const [x0,x1]=j.span.x, [y0,y1]=j.span.y;
+    return asArray(res?.components).map(parseMaybe).filter(p=>p&&typeof p==='object').map(p=>{
+      const b=fixBox(p.box);
+      if(b) p.box=[ Math.round(x0+b[0]*(x1-x0)/1000), Math.round(y0+b[1]*(y1-y0)/1000), Math.round(b[2]*(x1-x0)/1000), Math.round(b[3]*(y1-y0)/1000) ];
+      else p.box=null;
+      p._tile=j.name; return p;
+    });
+  }));
+  const ok=results.filter(r=>r.status==='fulfilled');
+  if(!ok.length) throw results[0].reason;
+  const parts=mergeParts(ok.flatMap(r=>r.value));
+  const failed=results.length-ok.length;
+  return {components:parts, _tileNote: failed?`${failed} of 4 quarters failed, so some parts may be missing.`:''};
+}
+
+const typeKey = t => String(t||'').toLowerCase().replace(/capacitor_?(electrolytic|ceramic|film)?/,'capacitor').replace(/_/g,' ').trim();
+const CONF = {high:3, medium:2, low:1};
+function overlapRatio(a,b){
+  const ix=Math.max(0, Math.min(a[0]+a[2],b[0]+b[2])-Math.max(a[0],b[0]));
+  const iy=Math.max(0, Math.min(a[1]+a[3],b[1]+b[3])-Math.max(a[1],b[1]));
+  const inter=ix*iy; if(!inter) return 0;
+  return inter/Math.min(a[2]*a[3], b[2]*b[3]);   // share of the smaller box covered
+}
+function mergeParts(list){
+  const kept=[];
+  for(const p of list){
+    const dup = kept.find(k=>{
+      if(!k.box||!p.box) return false;
+      const ov=overlapRatio(k.box,p.box);
+      const sameType = typeKey(k.type)===typeKey(p.type);
+      const sameRef = k.ref && p.ref && k.ref.toUpperCase()===p.ref.toUpperCase();
+      return sameRef ? ov>0.05 : (sameType && ov>0.45) || ov>0.8;
+    });
+    if(!dup){ kept.push(p); continue; }
+    // keep the better entry: higher confidence, readable markings, then larger (less cut-off) box
+    const score=x=>(CONF[x.confidence]||1)*10 + (x.markings?5:0) + (x.box?x.box[2]*x.box[3]/20000:0);
+    if(score(p)>score(dup)) Object.assign(dup, p);
+    else { if(!dup.ref&&p.ref) dup.ref=p.ref; if(!dup.markings&&p.markings){ dup.markings=p.markings; dup.readable=true; } }
+  }
+  // stable reading order: top-to-bottom, left-to-right in bands
+  kept.sort((a,b)=>{ const ay=a.box?Math.round(a.box[1]/120):99, by=b.box?Math.round(b.box[1]/120):99; return ay-by || (a.box?.[0]??0)-(b.box?.[0]??0); });
+  kept.forEach((p,i)=>{ p.id='p'+(i+1); delete p._tile; });
+  return kept;
+}
+
+/* ---------- tap to add a missed part ---------- */
+const ADD_ITEM = JSON.parse(JSON.stringify(PART_ITEM));
+ADD_ITEM.required = ADD_ITEM.required.filter(k=>k!=='id' && k!=='box');
+const ADD_TOOL = {name:'identify_component', description:'Identify the single component marked by the magenta ring.',
+  input_schema:{type:'object', required:['found'], properties:{
+    found:{type:'boolean', description:'False if there is no component at the ring (bare board, wire, glue).'},
+    component:ADD_ITEM }}};
+
+function tapCrop(nx, ny){
+  const src=S.fullCanvas, W=src.width, H=src.height;
+  const size=Math.round(Math.max(W,H)*0.16);
+  let sx=Math.round(nx/1000*W-size/2), sy=Math.round(ny/1000*H-size/2);
+  sx=Math.max(0,Math.min(W-size,sx)); sy=Math.max(0,Math.min(H-size,sy));
+  const sw=Math.min(size,W), sh=Math.min(size,H);
+  const k=Math.min(2.5, 900/Math.max(sw,sh));
+  const c=document.createElement('canvas'); c.width=Math.round(sw*k); c.height=Math.round(sh*k);
+  const g=c.getContext('2d'); g.imageSmoothingQuality='high'; g.drawImage(src,sx,sy,sw,sh,0,0,c.width,c.height);
+  const plain=c.toDataURL('image/jpeg',.9);
+  // mark the tapped point
+  const cx=(nx/1000*W-sx)*k, cy=(ny/1000*H-sy)*k, r=Math.max(18,c.width*0.06);
+  g.lineWidth=Math.max(3,c.width/150); g.strokeStyle='#ff00ff'; g.beginPath(); g.arc(cx,cy,r,0,Math.PI*2); g.stroke();
+  return {canvas:c, plain, region:{sx,sy,sw,sh,W,H}, tap:[cx/c.width*1000, cy/c.height*1000]};
+}
+
+function setAddMode(on){
+  S.addMode=on;
+  $('tgAdd').classList.toggle('on',on);
+  $('board').style.cursor = on?'crosshair':'';
+  $('addHint').classList.toggle('hidden',!on);
+}
+
+async function addPartAt(nx, ny){
+  setAddMode(false);
+  if(S.demo || !cfg().proxy){ $('placeNote').textContent='Adding parts needs your proxy set in ⚙︎ Settings (not available on the demo board).'; return; }
+  const t=tapCrop(nx,ny);
+  $('placeNote').textContent='Identifying the part you tapped…';
+  try{
+    const res=await callClaude({system:SCAN_SYSTEM+'\n\nFOR THIS RESPONSE: identify ONLY the single component inside or nearest the magenta ring in this close-up. Its bounding box is relative to this close-up image.', 
+      content:[{type:'image', source:{type:'base64', media_type:'image/jpeg', data:b64(t.canvas,.9)}},
+               {type:'text', text:`Close-up from a ${S.title||'circuit board'}. Identify the component marked by the magenta ring.`}],
+      tool:ADD_TOOL, maxTokens:2000});
+    if(!res?.found || !res.component){ $('placeNote').textContent='No component found where you tapped — try tapping the centre of the part.'; return; }
+    const p=parseMaybe(res.component);
+    const {sx,sy,sw,sh,W,H}=t.region;
+    let b=fixBox(p.box);
+    if(!b) b=[t.tap[0]-40,t.tap[1]-40,80,80];
+    p.box=[ Math.round((sx+b[0]/1000*sw)/W*1000), Math.round((sy+b[1]/1000*sh)/H*1000), Math.round(b[2]/1000*sw/W*1000), Math.round(b[3]/1000*sh/H*1000) ];
+    const ids=new Set(asArray(S.raw.components).map(c=>c.id));
+    let n=asArray(S.raw.components).length+1; while(ids.has('p'+n)) n++;
+    p.id='p'+n; p.added=true;
+    S.raw.components = [...asArray(S.raw.components), p];
+    S.scan = normalise(JSON.parse(JSON.stringify(S.raw)));
+    $('placeNote').textContent='';
+    refresh(); renderPlaceNote();
+    saveCurrent();
+    selectPart(p.id);
+  }catch(e){ $('placeNote').textContent='Could not identify that part: '+e.message; }
+}
+
 /* ---------- part diagrams & scope traces ---------- */
 const arr = v => Array.isArray(v) ? v : [];
 const METER_LABEL = {diode:['→|','Diode test'],resistance:['Ω','Resistance'],continuity:['🔊','Continuity'],capacitance:['⊣⊢','Capacitance'],dc_voltage:['V⎓','DC volts'],ac_voltage:['V~','AC volts'],esr:['ESR','ESR'],current:['A','Current'],frequency:['Hz','Frequency'],other:['?','Other']};
@@ -556,13 +696,15 @@ async function startScan(file){
       {type:'image', source:{type:'base64', media_type:'image/jpeg', data:b64(scanCanvas)}},
       {type:'text', text: note ? `The user says this board is from: ${note}` : 'No description of the device was given.'}
     ];
-    $('scanMsg').textContent='Analysing board sections and parts…';
+    const detailed = $('detailedChk').checked;
+    $('scanMsg').textContent = detailed ? 'Detailed scan: analysing 4 quarters at full resolution…' : 'Analysing board sections and parts…';
     const [ov, pr] = await Promise.allSettled([
       callClaude({system:SCAN_SYSTEM+OVERVIEW_FOCUS, content, tool:OVERVIEW_TOOL, maxTokens:5000}),
-      getParts(content)
+      detailed ? scanTiles(note) : getParts(content)
     ]);
     if(ov.status==='rejected') throw ov.reason;
-    const res = {...ov.value, components: pr.status==='fulfilled' ? asArray(pr.value?.components) : []};
+    const res = {...ov.value, components: pr.status==='fulfilled' ? asArray(pr.value?.components) : [], detailed};
+    if(pr.status==='fulfilled' && pr.value?._tileNote) res._tileNote = pr.value._tileNote;
     if(pr.status==='rejected'){ res._partsError = pr.reason?.message || 'unknown error'; S.lastDebug = pr.reason?.debug; }
     S.raw = res;
     S.scan = normalise(JSON.parse(JSON.stringify(res)));
@@ -668,12 +810,17 @@ function renderResult(){
   $('safetyCard').classList.toggle('hidden', !r.safety_notes.length);
   $('safetyList').innerHTML = r.safety_notes.map(n=>`<li>${esc(n)}</li>`).join('');
   renderLegend(); renderOverlay(); renderList();
-  const placed=r.components.length-r._unplaced;
+  renderPlaceNote();
+  try{ $('rawData').textContent=JSON.stringify(S.raw ?? r, null, 2); }catch(e){}
+  setAddMode(false);
+  show('resultView');
+}
+function renderPlaceNote(){
+  const r=S.scan; const placed=r.components.length-r._unplaced;
   $('placeNote').textContent = r._partsError ? `The parts list failed (${r._partsError}). Sections are shown — tap ＋ New to try again.` :
     !r.components.length ? 'No parts were returned for this photo — try again, or a closer photo.' :
-    (r._unplaced ? `${placed} of ${r.components.length} parts could be placed on the photo; the rest are in the list below.` : '');
+    [r._tileNote, r._unplaced ? `${placed} of ${r.components.length} parts could be placed on the photo; the rest are in the list below.` : ''].filter(Boolean).join(' ');
   try{ $('rawData').textContent=JSON.stringify(S.raw ?? r, null, 2); }catch(e){}
-  show('resultView');
 }
 
 function renderLegend(){
@@ -723,7 +870,7 @@ function renderList(){
   $('partCount').textContent=`(${items.length}${items.length!==S.scan.components.length?' of '+S.scan.components.length:''})`;
   $('partList').innerHTML = items.map(p=>`<div class="part ${S.selected===p.id?'sel':''}" data-part="${esc(p.id)}" id="li-${esc(p.id)}">
      <div class="num" style="background:${partColour(p)}">${p._n}</div>
-     <div style="flex:1;min-width:0"><div class="t">${esc(p.name)}${p.ref?` <span class="muted">· ${esc(p.ref)}</span>`:''}${p.confidence!=='high'?`<span class="conf ${p.confidence==='low'?'low':''}">${esc(p.confidence)} confidence</span>`:''}</div>
+     <div style="flex:1;min-width:0"><div class="t">${p.added?'<span class="conf" style="margin:0 6px 0 0">added</span>':''}${esc(p.name)}${p.ref?` <span class="muted">· ${esc(p.ref)}</span>`:''}${p.confidence!=='high'?`<span class="conf ${p.confidence==='low'?'low':''}">${esc(p.confidence)} confidence</span>`:''}</div>
      <div class="small muted">${p.markings?`<b style="color:var(--text)">${esc(p.markings)}</b> · `:(p.readable===false?'markings unreadable · ':'')}${esc(secById(p.section_id)?.name||'')}</div>
      <div class="small">${esc(p.role)}</div></div></div>`).join('') || '<p class="muted small">No parts match.</p>';
 }
@@ -1071,7 +1218,11 @@ $('zoomIn').onclick=()=>setZoom(S.zoom+0.5);
 $('zoomOut').onclick=()=>setZoom(S.zoom-0.5);
 $('partSearch').oninput=renderList;
 $('legend').onclick=e=>{ const c=e.target.closest('[data-sec]'); if(!c) return; const id=c.dataset.sec||null; S.filter = (id && S.filter!==id) ? id : null; refresh(); };
+$('tgAdd').onclick=()=>setAddMode(!S.addMode);
+$('detailedChk').checked = store.get('detailed','0')==='1';
+$('detailedChk').onchange=e=>store.set('detailed', e.target.checked?'1':'0');
 $('board').onclick=e=>{
+  if(S.addMode){ const rc=$('board').getBoundingClientRect(); addPartAt((e.clientX-rc.left)/rc.width*1000, (e.clientY-rc.top)/rc.height*1000); return; }
   const p=e.target.closest('[data-part]'); if(p){ selectPart(p.dataset.part); return; }
   const s=e.target.closest('[data-sec]'); if(s){ S.filter = S.filter===s.dataset.sec?null:s.dataset.sec; refresh(); }
 };
