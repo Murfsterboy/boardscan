@@ -140,6 +140,9 @@
   <section id="errorView" class="hidden">
     <div class="card">
       <div class="errbox" id="errorMsg"></div>
+      <details class="small hidden" id="errDebugWrap" style="margin-top:10px"><summary class="muted">Debug info (send this to get it fixed)</summary>
+        <button class="btn" style="margin:8px 0" id="copyDebug">Copy debug info</button>
+        <pre id="errDebug" style="white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;font-size:11px"></pre></details>
       <button class="btn block" style="margin-top:12px" id="errBack">Back</button>
     </div>
   </section>
@@ -312,22 +315,24 @@ async function callClaude({system, content, tool, maxTokens}){
       messages:[{role:'user', content}],
       tools:[tool], tool_choice:{type:'auto'}
     })});
-  }catch(e){ throw new Error('Could not reach the proxy. Check the URL and your connection.'); }
-  const data = await r.json().catch(()=>({}));
+  }catch(e){ throw mkErr('Could not reach the proxy. Check your connection, and keep the screen on and the app open while a scan runs.', {tool:tool.name, fetchError:String(e)}); }
+  const raw = await r.text();
+  let data={}; try{ data=JSON.parse(raw); }catch(e){}
+  const dbg = {tool:tool.name, status:r.status, stop_reason:data.stop_reason, usage:data.usage, blocks:(data.content||[]).map(b=>b.type), body:raw.slice(0,1500)};
   if(!r.ok){
     const m = data?.error?.message || data?.error || r.statusText;
-    throw new Error(`The analysis service returned an error (${r.status}): ${m}`);
+    throw mkErr(`The analysis service returned an error (${r.status}): ${m}`, dbg);
   }
+  if(data.stop_reason==='max_tokens'){ const e=mkErr('The answer was too long and got cut short.', dbg); e.truncated=true; throw e; }
   const block = (data.content||[]).find(b=>b.type==='tool_use');
-  if(data.stop_reason==='max_tokens' && !block) throw new Error('The answer was cut short. Please try again.');
   if(block) return deepParse(block.input);
   // Fallback: model replied in text — try to pull JSON out of it
   const text = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
   const m = text.match(/\{[\s\S]*\}/);
   if(m){ try{ return deepParse(JSON.parse(m[0])); }catch(e){} }
-  if(data.stop_reason==='max_tokens') throw new Error('The board has so many parts the answer was cut short. Try photographing half the board at a time.');
-  throw new Error('The analysis came back without structured results. Please try again.');
+  throw mkErr('The analysis came back without structured results. Please try again.', dbg);
 }
+function mkErr(msg, debug){ const e=new Error(msg); e.debug=debug; return e; }
 
 const BOX = {type:'array', items:{type:'integer'}, minItems:4, maxItems:4,
   description:'Bounding box [x, y, width, height], each 0–1000, normalised to image width (x, width) and height (y, height), origin top-left.'};
@@ -365,11 +370,24 @@ const SCAN_TOOL = {
 const SCAN_SYSTEM = `You are an experienced electronics repair technician helping volunteers at a UK repair café (230 V 50 Hz mains) understand a circuit board from a photo.
 Tasks:
 1. Divide the board into functional sections (mains input & filtering, PSU primary, isolation/transformer, step-down secondary, regulation, microcontroller/logic, relay or motor drivers, connectors, etc.). Give each a bounding box covering the area it occupies. Mark the mains side and anything at mains potential as hazard "danger".
-2. List the significant components with a bounding box each. Prioritise larger and repair-relevant parts (fuses, capacitors, rectifiers, transformers, regulators, transistors/MOSFETs, ICs, relays, connectors). Include every through-hole component you can see. Group dense clusters of tiny SMD passives into a single entry rather than listing each. Up to about 80 entries.
+2. List the significant components with a bounding box each. Prioritise larger and repair-relevant parts (fuses, capacitors, rectifiers, transformers, regulators, transistors/MOSFETs, ICs, relays, connectors). Include every through-hole component you can see. Group dense clusters of tiny SMD passives into a single entry rather than listing each. Up to about 60 entries, keeping each role to one short sentence.
 3. Be honest: only report markings you can actually read. If text is unreadable set readable=false, leave markings empty and lower confidence. Never invent part numbers.
 4. Boxes: [x, y, width, height] normalised 0–1000 to the image, origin top-left. Be as accurate as you can.
 5. Safety notes: practical warnings specific to this board (charged bulk capacitors, isolation gap, hot heatsinks, etc.).
 Use plain English that a capable hobbyist understands. Use British spelling.`;
+
+const OVERVIEW_TOOL = {name:'report_board_overview', description:'Report the board overview, functional sections and safety notes.',
+  input_schema:{type:'object', required:['device_guess','board_summary','image_quality','sections','safety_notes'],
+    properties:Object.fromEntries(Object.entries(SCAN_TOOL.input_schema.properties).filter(([k])=>k!=='components'))}};
+const PART_ITEM = JSON.parse(JSON.stringify(SCAN_TOOL.input_schema.properties.components.items));
+delete PART_ITEM.properties.section_id; delete PART_ITEM.properties.package;
+PART_ITEM.properties.section_type = {type:'string', enum:Object.keys(SEC), description:'Which kind of functional area the part sits in.'};
+PART_ITEM.properties.role.description = 'What it does here — one short sentence (max ~12 words).';
+PART_ITEM.required = ['id','name','type','section_type','role','box','confidence','readable'];
+const PARTS_TOOL = {name:'report_components', description:'Report the components visible on the board.',
+  input_schema:{type:'object', required:['components'], properties:{components:{type:'array', items:PART_ITEM}}}};
+const OVERVIEW_FOCUS = '\n\nFOR THIS RESPONSE: report only the device guess, summary, image quality, functional sections (task 1) and safety notes (task 5). Do NOT list individual components.';
+const PARTS_FOCUS = '\n\nFOR THIS RESPONSE: report only the component list (task 2), with section_type giving the kind of area each part sits in. Keep text fields brief.';
 
 const METER_MODES = ['diode','resistance','continuity','capacitance','dc_voltage','ac_voltage','esr','current','frequency','other'];
 const PACKAGES = ['axial_2','radial_2','crystal_2','to92_3','to220_3','sot23_3','sip','dip','soic','bridge_4','relay','transformer','connector','other'];
@@ -538,7 +556,14 @@ async function startScan(file){
       {type:'image', source:{type:'base64', media_type:'image/jpeg', data:b64(scanCanvas)}},
       {type:'text', text: note ? `The user says this board is from: ${note}` : 'No description of the device was given.'}
     ];
-    const res = await callClaude({system:SCAN_SYSTEM, content, tool:SCAN_TOOL, maxTokens:8000});
+    $('scanMsg').textContent='Analysing board sections and parts…';
+    const [ov, pr] = await Promise.allSettled([
+      callClaude({system:SCAN_SYSTEM+OVERVIEW_FOCUS, content, tool:OVERVIEW_TOOL, maxTokens:5000}),
+      getParts(content)
+    ]);
+    if(ov.status==='rejected') throw ov.reason;
+    const res = {...ov.value, components: pr.status==='fulfilled' ? asArray(pr.value?.components) : []};
+    if(pr.status==='rejected'){ res._partsError = pr.reason?.message || 'unknown error'; S.lastDebug = pr.reason?.debug; }
     S.raw = res;
     S.scan = normalise(JSON.parse(JSON.stringify(res)));
     S.imageData = toCanvas(S.fullCanvas, 2000).toDataURL('image/jpeg', .85);
@@ -546,7 +571,17 @@ async function startScan(file){
     S.title = S.scan.device_guess || 'Circuit board';
     renderResult();
     saveCurrent();
-  }catch(e){ showError(e.message); }
+  }catch(e){ showError(e.message, e.debug); }
+}
+
+async function getParts(content){
+  try{
+    return await callClaude({system:SCAN_SYSTEM+PARTS_FOCUS, content, tool:PARTS_TOOL, maxTokens:8000});
+  }catch(e){
+    if(!e.truncated) throw e;
+    $('scanMsg').textContent='Lots of parts — re-checking the most important ones…';
+    return await callClaude({system:SCAN_SYSTEM+PARTS_FOCUS+'\nThis board is busy: list ONLY the 35 most repair-relevant parts this time.', content, tool:PARTS_TOOL, maxTokens:8000});
+  }
 }
 
 /* Recursively turn JSON-looking strings back into objects/arrays */
@@ -599,11 +634,24 @@ function normalise(r){
   r.sections.forEach((s,i)=>{ s.box=fixBox(s.box); if(!s.id) s.id='s'+(i+1); if(!s.hazard) s.hazard='none'; if(!s.type) s.type='other'; });
   r.components.forEach((c,i)=>{ c.box=fixBox(c.box); c._n=i+1; if(!c.id) c.id='p'+(i+1); if(!c.confidence) c.confidence='medium'; if(!c.name) c.name=c.type||'Component'; });
   r.safety_notes=asArray(r.safety_notes).filter(x=>typeof x==='string');
+  r.components.forEach(c=>{
+    if(c.section_id && r.sections.some(s=>s.id===c.section_id)) return;
+    const centre = c.box ? [c.box[0]+c.box[2]/2, c.box[1]+c.box[3]/2] : null;
+    const inside = s => centre && s.box && centre[0]>=s.box[0] && centre[0]<=s.box[0]+s.box[2] && centre[1]>=s.box[1] && centre[1]<=s.box[1]+s.box[3];
+    const sameType = r.sections.filter(s=>s.type===c.section_type);
+    const pick = sameType.find(inside) || sameType[0] || r.sections.find(inside);
+    c.section_id = pick ? pick.id : '';
+  });
   r._unplaced=r.components.filter(c=>!c.box).length;
   return r;
 }
 
-function showError(msg){ $('errorMsg').textContent = msg; show('errorView'); }
+function showError(msg, debug){
+  $('errorMsg').textContent = msg;
+  const d = debug ? JSON.stringify(debug, null, 2) : '';
+  $('errDebugWrap').classList.toggle('hidden', !d); $('errDebug').textContent = d;
+  show('errorView');
+}
 
 /* ---------- rendering ---------- */
 const secById = id => (S.scan.sections||[]).find(s=>s.id===id);
@@ -621,7 +669,8 @@ function renderResult(){
   $('safetyList').innerHTML = r.safety_notes.map(n=>`<li>${esc(n)}</li>`).join('');
   renderLegend(); renderOverlay(); renderList();
   const placed=r.components.length-r._unplaced;
-  $('placeNote').textContent = !r.components.length ? 'No parts were returned for this photo — try again, or a closer photo.' :
+  $('placeNote').textContent = r._partsError ? `The parts list failed (${r._partsError}). Sections are shown — tap ＋ New to try again.` :
+    !r.components.length ? 'No parts were returned for this photo — try again, or a closer photo.' :
     (r._unplaced ? `${placed} of ${r.components.length} parts could be placed on the photo; the rest are in the list below.` : '');
   try{ $('rawData').textContent=JSON.stringify(S.raw ?? r, null, 2); }catch(e){}
   show('resultView');
@@ -1027,6 +1076,7 @@ $('board').onclick=e=>{
   const s=e.target.closest('[data-sec]'); if(s){ S.filter = S.filter===s.dataset.sec?null:s.dataset.sec; refresh(); }
 };
 $('partList').onclick=e=>{ const p=e.target.closest('[data-part]'); if(p) selectPart(p.dataset.part); };
+$('copyDebug').onclick=()=>{ try{ navigator.clipboard.writeText($('errDebug').textContent); $('copyDebug').textContent='Copied'; }catch(e){} };
 $('copyRaw').onclick=()=>{ try{ navigator.clipboard.writeText($('rawData').textContent); $('copyRaw').textContent='Copied'; }catch(e){} };
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeSheet(); closeSettings(); } });
 
