@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1419">
+<title>BoardScan – circuit board analyser</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#182028; --panel2:#1f2933; --line:#2c3a47; --text:#e6edf3; --muted:#9aa7b4;
+    --accent:#3fb6ff; --danger:#ff5d5d; --warn:#ffb224; --ok:#3ecf8e; --radius:12px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  button{font:inherit;color:inherit;cursor:pointer}
+  header{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;padding:12px 16px;background:rgba(15,20,25,.95);border-bottom:1px solid var(--line);backdrop-filter:blur(6px)}
+  header h1{font-size:18px;margin:0;flex:1;letter-spacing:.2px}
+  header h1 span{color:var(--accent)}
+  .iconbtn{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:7px 11px}
+  main{max-width:980px;margin:0 auto;padding:14px 14px 80px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:12px}
+  .card h2{font-size:16px;margin:0 0 8px}
+  .muted{color:var(--muted)}
+  .small{font-size:13px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);background:var(--panel2);border-radius:10px;padding:11px 14px;font-weight:600}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#04121c}
+  .btn.block{width:100%}
+  .btnrow{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+  .safety{border-color:#5c2a2a;background:#241818}
+  .safety b{color:var(--danger)}
+  input[type=text],input[type=url],input[type=password],select,textarea{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px;font:inherit}
+  label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+  .hidden{display:none!important}
+  .spinner{width:38px;height:38px;border:4px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:10px auto}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  /* viewer */
+  .viewer-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+  .toggle{border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:6px 12px;font-size:13px}
+  .toggle.on{background:#12324a;border-color:var(--accent)}
+  .scroller{overflow:auto;border-radius:10px;border:1px solid var(--line);max-height:70vh;background:#000;-webkit-overflow-scrolling:touch}
+  .board{position:relative;width:100%;line-height:0}
+  .board img{width:100%;display:block;user-select:none;-webkit-user-drag:none}
+  .board svg{position:absolute;inset:0;width:100%;height:100%}
+  .sec-rect{stroke-width:2;vector-effect:non-scaling-stroke;cursor:pointer}
+  .part-rect{fill:transparent;stroke:#fff;stroke-width:1.5;vector-effect:non-scaling-stroke;cursor:pointer}
+  .part-rect.sel{stroke:#fff;stroke-width:3.5;animation:pulse 1.1s ease-in-out infinite}
+  @keyframes pulse{50%{stroke-opacity:.35}}
+  .pin{position:absolute;transform:translate(-50%,-50%);min-width:20px;height:20px;padding:0 4px;border-radius:10px;font:700 11px/20px system-ui;text-align:center;color:#000;border:1.5px solid #000;cursor:pointer;line-height:17px;box-shadow:0 1px 3px rgba(0,0,0,.6)}
+  .pin.sel{transform:translate(-50%,-50%) scale(1.35);z-index:5;outline:2px solid #fff}
+  .seclabel{position:absolute;font:700 11px/1.2 system-ui;padding:2px 6px;border-radius:6px;color:#000;white-space:nowrap;pointer-events:none;opacity:.92}
+  .dim{opacity:.18}
+  /* legend & list */
+  .legend{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:5px 10px;font-size:13px;background:var(--panel2)}
+  .chip.on{border-color:#fff}
+  .dot{width:11px;height:11px;border-radius:50%;flex:none}
+  .haz{font-size:11px;font-weight:700;padding:1px 6px;border-radius:6px;margin-left:4px}
+  .haz.danger{background:var(--danger);color:#000}.haz.caution{background:var(--warn);color:#000}
+  .sec-desc{margin:8px 0 0;padding:0;list-style:none}
+  .sec-desc li{padding:8px 0;border-top:1px solid var(--line)}
+  .search{margin-bottom:8px}
+  .part{display:flex;gap:10px;align-items:flex-start;padding:10px 4px;border-top:1px solid var(--line);cursor:pointer}
+  .part:hover{background:var(--panel2)}
+  .part.sel{background:#12324a}
+  .num{flex:none;min-width:26px;height:26px;border-radius:13px;color:#000;font-weight:800;font-size:12px;display:flex;align-items:center;justify-content:center}
+  .part .t{font-weight:600}
+  .conf{font-size:11px;padding:1px 6px;border-radius:6px;border:1px solid var(--line);margin-left:6px;color:var(--muted)}
+  .conf.low{border-color:var(--warn);color:var(--warn)}
+  .warnbox{border-left:4px solid var(--warn);padding:8px 10px;background:#2a2312;border-radius:8px;margin-top:8px}
+  .errbox{border-left:4px solid var(--danger);padding:10px;background:#2a1414;border-radius:8px}
+  /* sheet */
+  .sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40}
+  .sheet{position:fixed;left:0;right:0;bottom:0;z-index:41;max-height:88vh;overflow:auto;background:var(--panel);border-top:1px solid var(--line);border-radius:16px 16px 0 0;padding:14px 16px 30px;max-width:980px;margin:0 auto}
+  .sheet .grab{width:44px;height:5px;border-radius:3px;background:var(--line);margin:0 auto 10px}
+  .sheet h3{margin:0;font-size:18px}
+  .sheet h4{margin:16px 0 6px;font-size:14px;color:var(--accent);text-transform:uppercase;letter-spacing:.5px}
+  .crop{display:block;max-width:100%;max-height:220px;border-radius:10px;border:1px solid var(--line);margin:10px 0;background:#000}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14px}
+  .kv div:nth-child(odd){color:var(--muted)}
+  .links{display:flex;flex-wrap:wrap;gap:8px}
+  .links a{color:var(--accent);text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:13px}
+  ol,ul{padding-left:20px;margin:6px 0}
+  .test{background:var(--panel2);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+  .test b{display:block;margin-bottom:4px}
+  .preview{max-height:240px;max-width:100%;border-radius:10px;display:block;margin:10px auto}
+  footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Board<span>Scan</span></h1>
+  <button class="iconbtn hidden" id="newBtn" title="New scan">＋ New</button>
+  <button class="iconbtn" id="settingsBtn" title="Settings">⚙︎</button>
+</header>
+
+<main>
+  <!-- START -->
+  <section id="startView">
+    <div class="card safety">
+      <b>⚠ Safety first.</b> Unplug the appliance before removing covers. Mains boards can hold a lethal charge in the large capacitors after unplugging — treat the mains side as live until you have checked it with a meter and safely discharged it.
+    </div>
+    <div class="card">
+      <h2>Scan a circuit board</h2>
+      <p class="muted small">Take the photo straight on, in good even light, with the whole board filling the frame. Avoid glare on shiny parts. Close-ups give better part identification.</p>
+      <label for="note">What is it? (optional, helps accuracy)</label>
+      <input type="text" id="note" placeholder="e.g. microwave control board, kettle base, TV power supply">
+      <div class="btnrow">
+        <button class="btn primary" id="cameraBtn">📷 Take photo</button>
+        <button class="btn" id="fileBtn">🖼 Choose photo</button>
+      </div>
+      <button class="btn block" id="demoBtn" style="margin-top:10px">▶ Try the demo board</button>
+      <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
+      <input type="file" id="fileInput" accept="image/*" class="hidden">
+      <p id="noProxyHint" class="small muted hidden" style="margin-top:10px">To scan your own photos, add your proxy URL in ⚙︎ Settings. The demo works without it.</p>
+    </div>
+  </section>
+
+  <!-- SCANNING -->
+  <section id="scanView" class="hidden">
+    <div class="card" style="text-align:center">
+      <img id="scanPreview" class="preview" alt="">
+      <div class="spinner"></div>
+      <div id="scanMsg">Analysing board…</div>
+      <div class="muted small">This usually takes 20–60 seconds.</div>
+    </div>
+  </section>
+
+  <!-- ERROR -->
+  <section id="errorView" class="hidden">
+    <div class="card">
+      <div class="errbox" id="errorMsg"></div>
+      <button class="btn block" style="margin-top:12px" id="errBack">Back</button>
+    </div>
+  </section>
+
+  <!-- RESULT -->
+  <section id="resultView" class="hidden">
+    <div class="card">
+      <h2 id="deviceGuess"></h2>
+      <div id="boardSummary" class="muted"></div>
+      <div id="qualityBox"></div>
+    </div>
+
+    <div class="card">
+      <div class="viewer-tools">
+        <button class="toggle on" id="tgSections">Sections</button>
+        <button class="toggle on" id="tgParts">Parts</button>
+        <span style="flex:1"></span>
+        <button class="toggle" id="zoomOut">−</button>
+        <span class="small muted" id="zoomLbl">100%</span>
+        <button class="toggle" id="zoomIn">＋</button>
+      </div>
+      <div class="scroller" id="scroller">
+        <div class="board" id="board">
+          <img id="boardImg" alt="Circuit board">
+          <svg id="overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg>
+          <div id="labels"></div>
+        </div>
+      </div>
+      <p class="small muted" style="margin:8px 0 0">Tap a numbered marker or a part in the list. Turn Parts off to see section names. Outlines are approximate.</p>
+    </div>
+
+    <div class="card">
+      <h2>Board sections</h2>
+      <p class="small muted" style="margin-top:0">Tap a section to show only its parts.</p>
+      <div class="legend" id="legend"></div>
+      <ul class="sec-desc" id="secDesc"></ul>
+    </div>
+
+    <div class="card" id="safetyCard">
+      <h2>⚠ Safety notes for this board</h2>
+      <ul id="safetyList"></ul>
+    </div>
+
+    <div class="card">
+      <h2>Components <span class="muted small" id="partCount"></span></h2>
+      <input type="text" class="search" id="partSearch" placeholder="Search parts, e.g. capacitor, U3, 7805">
+      <div id="partList"></div>
+    </div>
+  </section>
+
+  <footer>BoardScan prototype · AI identification can be wrong — always confirm markings and measurements before replacing parts.</footer>
+</main>
+
+<!-- PART SHEET -->
+<div class="sheet-bg hidden" id="sheetBg"></div>
+<div class="sheet hidden" id="sheet" role="dialog" aria-modal="true">
+  <div class="grab"></div>
+  <div style="display:flex;align-items:flex-start;gap:10px">
+    <div style="flex:1"><h3 id="pTitle"></h3><div class="small muted" id="pSub"></div></div>
+    <button class="iconbtn" id="sheetClose">✕</button>
+  </div>
+  <div id="pBody"></div>
+</div>
+
+<!-- SETTINGS SHEET -->
+<div class="sheet-bg hidden" id="setBg"></div>
+<div class="sheet hidden" id="setSheet">
+  <div class="grab"></div>
+  <div style="display:flex;align-items:center"><h3 style="flex:1">Settings</h3><button class="iconbtn" id="setClose">✕</button></div>
+  <label for="proxyUrl">Proxy URL (your Cloudflare Worker)</label>
+  <input type="url" id="proxyUrl" placeholder="https://boardscan-proxy.yourname.workers.dev">
+  <label for="appKey">App key (if you set APP_KEY on the worker)</label>
+  <input type="password" id="appKey" placeholder="optional">
+  <label for="model">Model</label>
+  <select id="model">
+    <option value="claude-sonnet-5-5">Claude Sonnet 5.5 — fast, good value (recommended)</option>
+    <option value="claude-opus-5-5">Claude Opus 5.5 — most accurate, slower</option>
+  </select>
+  <button class="btn primary block" style="margin-top:14px" id="saveSettings">Save</button>
+  <p class="small muted">Settings are stored only on this device. Your API key stays on the proxy, never in this page.</p>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ---------- section types & colours ---------- */
+const SEC = {
+  mains:        {c:'#ff5d5d', label:'Mains input'},
+  psu_primary:  {c:'#ff8b3d', label:'PSU primary (high voltage)'},
+  psu_secondary:{c:'#ffc53d', label:'Step-down / low-voltage supply'},
+  regulation:   {c:'#d4e157', label:'Voltage regulation'},
+  mcu:          {c:'#3fb6ff', label:'Microcontroller / logic'},
+  low_voltage:  {c:'#3ecf8e', label:'Low-voltage circuitry'},
+  motor_driver: {c:'#b47cff', label:'Motor / load driver'},
+  relay_switching:{c:'#9c7bff', label:'Relay / switching'},
+  rf:           {c:'#2dd4bf', label:'RF / wireless'},
+  audio:        {c:'#f472b6', label:'Audio'},
+  display:      {c:'#60a5fa', label:'Display / LEDs'},
+  sensor:       {c:'#a3e635', label:'Sensors'},
+  io:           {c:'#b0bec5', label:'Connectors / I/O'},
+  other:        {c:'#8b949e', label:'Other'}
+};
+const secColour = t => (SEC[t]||SEC.other).c;
+
+/* ---------- state ---------- */
+const S = {scan:null, fullCanvas:null, selected:null, filter:null, showSec:true, showParts:true, zoom:1, demo:false, details:{}};
+const store = {
+  get(k,d){ try{ const v=localStorage.getItem('boardscan.'+k); return v===null?d:v; }catch(e){ return d; } },
+  set(k,v){ try{ localStorage.setItem('boardscan.'+k,v); }catch(e){} }
+};
+const cfg = () => ({proxy:store.get('proxy',''), key:store.get('appKey',''), model:store.get('model','claude-sonnet-5-5')});
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function show(view){
+  ['startView','scanView','errorView','resultView'].forEach(v => $(v).classList.toggle('hidden', v!==view));
+  $('newBtn').classList.toggle('hidden', view==='startView');
+  window.scrollTo(0,0);
+}
+function refreshHint(){ $('noProxyHint').classList.toggle('hidden', !!cfg().proxy); }
+
+/* ---------- image handling ---------- */
+function loadImage(src){
+  return new Promise((res,rej)=>{ const i=new Image(); i.onload=()=>res(i); i.onerror=()=>rej(new Error('Could not read that image.')); i.src=src; });
+}
+function toCanvas(img, maxEdge){
+  const s = Math.min(1, maxEdge/Math.max(img.naturalWidth||img.width, img.naturalHeight||img.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round((img.naturalWidth||img.width)*s); c.height = Math.round((img.naturalHeight||img.height)*s);
+  c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+  return c;
+}
+const b64 = (canvas, q=0.85) => canvas.toDataURL('image/jpeg', q).split(',')[1];
+
+function cropCanvas(box, maxEdge=800){
+  const src = S.fullCanvas; if(!src || !box) return null;
+  let [x,y,w,h] = box.map(Number);
+  const W=src.width, H=src.height;
+  let px=x/1000*W, py=y/1000*H, pw=w/1000*W, ph=h/1000*H;
+  const pad = Math.max(pw,ph)*0.35 + 20;
+  px-=pad; py-=pad; pw+=pad*2; ph+=pad*2;
+  px=Math.max(0,px); py=Math.max(0,py); pw=Math.min(W-px,pw); ph=Math.min(H-py,ph);
+  if(pw<4||ph<4) return null;
+  const s = Math.min(3, maxEdge/Math.max(pw,ph));
+  const c=document.createElement('canvas'); c.width=Math.round(pw*s); c.height=Math.round(ph*s);
+  const g=c.getContext('2d'); g.imageSmoothingQuality='high';
+  g.drawImage(src,px,py,pw,ph,0,0,c.width,c.height);
+  return c;
+}
+
+/* ---------- API ---------- */
+async function callClaude({system, content, tool, maxTokens}){
+  const {proxy,key,model} = cfg();
+  if(!proxy) throw new Error('No proxy URL set. Open ⚙︎ Settings and add your Cloudflare Worker URL.');
+  const headers = {'content-type':'application/json'};
+  if(key) headers['x-app-key'] = key;
+  let r;
+  try{
+    r = await fetch(proxy, {method:'POST', headers, body: JSON.stringify({
+      model, max_tokens: maxTokens, system,
+      messages:[{role:'user', content}],
+      tools:[tool], tool_choice:{type:'tool', name:tool.name}
+    })});
+  }catch(e){ throw new Error('Could not reach the proxy. Check the URL and your connection.'); }
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok){
+    const m = data?.error?.message || data?.error || r.statusText;
+    throw new Error(`The analysis service returned an error (${r.status}): ${m}`);
+  }
+  const block = (data.content||[]).find(b=>b.type==='tool_use');
+  if(!block) throw new Error('The analysis came back without structured results. Please try again.');
+  return block.input;
+}
+
+const BOX = {type:'array', items:{type:'integer'}, minItems:4, maxItems:4,
+  description:'Bounding box [x, y, width, height], each 0–1000, normalised to image width (x, width) and height (y, height), origin top-left.'};
+
+const SCAN_TOOL = {
+  name:'report_board',
+  description:'Report the analysis of the circuit board photo.',
+  input_schema:{type:'object', required:['device_guess','board_summary','image_quality','sections','components','safety_notes'], properties:{
+    device_guess:{type:'string', description:'Short guess of what the board is from, e.g. "Microwave oven control board".'},
+    board_summary:{type:'string', description:'2–4 plain-English sentences describing how the board works overall.'},
+    image_quality:{type:'object', required:['rating','advice'], properties:{rating:{type:'string', enum:['good','fair','poor']}, advice:{type:'string'}}},
+    sections:{type:'array', items:{type:'object', required:['id','name','type','description','hazard','box'], properties:{
+      id:{type:'string'}, name:{type:'string'},
+      type:{type:'string', enum:Object.keys(SEC)},
+      description:{type:'string', description:'What this section does, plainly, 1–2 sentences.'},
+      hazard:{type:'string', enum:['none','caution','danger']},
+      box:BOX }}},
+    components:{type:'array', items:{type:'object', required:['id','name','type','section_id','role','box','confidence','readable'], properties:{
+      id:{type:'string'},
+      ref:{type:'string', description:'Silkscreen reference such as C12, R4, U1 if visible, else empty.'},
+      name:{type:'string', description:'Plain name, e.g. "Bulk electrolytic capacitor".'},
+      type:{type:'string', description:'Generic type, e.g. capacitor_electrolytic, resistor, diode, bridge_rectifier, fuse, varistor, transformer, inductor, optocoupler, mosfet, transistor, voltage_regulator, ic, microcontroller, crystal, relay, connector, switch, led, triac, thermistor, buzzer, other.'},
+      markings:{type:'string', description:'Exact text printed on the part ONLY if legible in the photo; otherwise empty. Never guess.'},
+      value:{type:'string', description:'Rating/value if legible or clearly implied by markings, e.g. "470µF 400V".'},
+      package:{type:'string'},
+      section_id:{type:'string'},
+      role:{type:'string', description:'What it does in this circuit, 1 sentence.'},
+      box:BOX,
+      confidence:{type:'string', enum:['high','medium','low']},
+      readable:{type:'boolean', description:'True if markings could be read.'} }}},
+    safety_notes:{type:'array', items:{type:'string'}}
+  }}
+};
+
+const SCAN_SYSTEM = `You are an experienced electronics repair technician helping volunteers at a UK repair café (230 V 50 Hz mains) understand a circuit board from a photo.
+Tasks:
+1. Divide the board into functional sections (mains input & filtering, PSU primary, isolation/transformer, step-down secondary, regulation, microcontroller/logic, relay or motor drivers, connectors, etc.). Give each a bounding box covering the area it occupies. Mark the mains side and anything at mains potential as hazard "danger".
+2. List the significant components with a bounding box each. Prioritise larger and repair-relevant parts (fuses, capacitors, rectifiers, transformers, regulators, transistors/MOSFETs, ICs, relays, connectors). Group dense clusters of tiny SMD passives into a single entry rather than listing each. Aim for at most about 60 entries.
+3. Be honest: only report markings you can actually read. If text is unreadable set readable=false, leave markings empty and lower confidence. Never invent part numbers.
+4. Boxes: [x, y, width, height] normalised 0–1000 to the image, origin top-left. Be as accurate as you can.
+5. Safety notes: practical warnings specific to this board (charged bulk capacitors, isolation gap, hot heatsinks, etc.).
+Use plain English that a capable hobbyist understands. Use British spelling.`;
+
+const DETAIL_TOOL = {
+  name:'component_detail',
+  description:'Detailed repair information about one component.',
+  input_schema:{type:'object', required:['identification','function_in_circuit','how_to_test','common_failures','replacement','safety','datasheet_query'], properties:{
+    identification:{type:'string', description:'What the part is, including part number decoding if markings are legible. Say clearly if it cannot be identified exactly.'},
+    function_in_circuit:{type:'string'},
+    specs:{type:'array', items:{type:'object', required:['label','value'], properties:{label:{type:'string'}, value:{type:'string'}}}, description:'Key ratings, only where known or decoded from markings.'},
+    how_to_test:{type:'array', items:{type:'object', required:['method','steps'], properties:{
+      method:{type:'string', description:'e.g. "Visual check", "In-circuit, power off (multimeter)", "Out of circuit", "Powered (with care)".'},
+      steps:{type:'array', items:{type:'string'}} }}},
+    common_failures:{type:'array', items:{type:'string'}, description:'Typical failure modes and visible signs.'},
+    replacement:{type:'object', required:['notes'], properties:{notes:{type:'string'}, suggested_parts:{type:'array', items:{type:'string'}}}},
+    safety:{type:'array', items:{type:'string'}},
+    datasheet_query:{type:'string', description:'Best search term for the datasheet (part number), or empty if unknown.'}
+  }}
+};
+
+const DETAIL_SYSTEM = `You are an experienced electronics repair technician advising a UK repair café volunteer. You are given a close-up crop of one component from a circuit board and context from an earlier whole-board scan. Re-read the markings from the close-up if you can. Give practical, safe testing steps using a multimeter (and oscilloscope / bench PSU where useful). Never invent part numbers; say when something cannot be identified. British spelling, plain English.`;
+
+/* ---------- scanning ---------- */
+async function startScan(file){
+  if(!file) return;
+  if(!cfg().proxy){ openSettings(); return; }
+  S.demo=false; S.details={};
+  try{
+    const url = URL.createObjectURL(file);
+    const img = await loadImage(url);
+    S.fullCanvas = toCanvas(img, 3200);
+    const scanCanvas = toCanvas(img, 1568);
+    $('scanPreview').src = url; $('boardImg').src = url;
+    show('scanView');
+    const note = $('note').value.trim();
+    const content = [
+      {type:'image', source:{type:'base64', media_type:'image/jpeg', data:b64(scanCanvas)}},
+      {type:'text', text: note ? `The user says this board is from: ${note}` : 'No description of the device was given.'}
+    ];
+    const res = await callClaude({system:SCAN_SYSTEM, content, tool:SCAN_TOOL, maxTokens:8000});
+    S.scan = normalise(res);
+    renderResult();
+  }catch(e){ showError(e.message); }
+}
+
+function normalise(r){
+  r.sections = (r.sections||[]).filter(s=>Array.isArray(s.box)&&s.box.length===4);
+  r.components = (r.components||[]).filter(c=>Array.isArray(c.box)&&c.box.length===4);
+  r.components.forEach((c,i)=>{ c._n=i+1; if(!c.id) c.id='p'+(i+1); });
+  r.safety_notes = r.safety_notes||[];
+  return r;
+}
+
+function showError(msg){ $('errorMsg').textContent = msg; show('errorView'); }
+
+/* ---------- rendering ---------- */
+const secById = id => (S.scan.sections||[]).find(s=>s.id===id);
+const partColour = p => secColour(secById(p.section_id)?.type);
+
+function renderResult(){
+  const r=S.scan;
+  S.selected=null; S.filter=null; setZoom(1);
+  $('deviceGuess').textContent = r.device_guess || 'Circuit board';
+  $('boardSummary').textContent = r.board_summary || '';
+  const q=r.image_quality||{};
+  $('qualityBox').innerHTML = (q.rating && q.rating!=='good') ? `<div class="warnbox small"><b>Photo quality: ${esc(q.rating)}.</b> ${esc(q.advice)}</div>` : '';
+  $('safetyCard').classList.toggle('hidden', !r.safety_notes.length);
+  $('safetyList').innerHTML = r.safety_notes.map(n=>`<li>${esc(n)}</li>`).join('');
+  renderLegend(); renderOverlay(); renderList();
+  show('resultView');
+}
+
+function renderLegend(){
+  const secs=S.scan.sections;
+  $('legend').innerHTML = secs.map(s=>`<button class="chip ${S.filter===s.id?'on':''}" data-sec="${esc(s.id)}"><span class="dot" style="background:${secColour(s.type)}"></span>${esc(s.name)}${s.hazard!=='none'?`<span class="haz ${s.hazard}">${s.hazard==='danger'?'DANGER':'CAUTION'}</span>`:''}</button>`).join('')
+    + (S.filter?`<button class="chip" data-sec="">Show all</button>`:'');
+  $('secDesc').innerHTML = secs.map(s=>`<li><span class="dot" style="display:inline-block;background:${secColour(s.type)};margin-right:6px"></span><b>${esc(s.name)}</b> <span class="small muted">· ${esc((SEC[s.type]||SEC.other).label)}</span><div class="small">${esc(s.description)}</div></li>`).join('');
+}
+
+function renderOverlay(){
+  const svg=$('overlay'), labels=$('labels'); const r=S.scan;
+  let h='';
+  if(S.showSec) r.sections.forEach(s=>{
+    const [x,y,w,hh]=s.box, c=secColour(s.type), dim=S.filter&&S.filter!==s.id;
+    h+=`<rect class="sec-rect ${dim?'dim':''}" data-sec="${esc(s.id)}" x="${x}" y="${y}" width="${w}" height="${hh}" rx="4" fill="${c}" fill-opacity="${S.filter===s.id?0.28:0.16}" stroke="${c}" ${s.hazard==='danger'?'stroke-dasharray="6 4"':''}/>`;
+  });
+  if(S.showParts) r.components.forEach(p=>{
+    if(S.filter && p.section_id!==S.filter) return;
+    const [x,y,w,hh]=p.box;
+    h+=`<rect class="part-rect ${S.selected===p.id?'sel':''}" data-part="${esc(p.id)}" x="${x}" y="${y}" width="${w}" height="${hh}" rx="2" stroke="${partColour(p)}"/>`;
+  });
+  svg.innerHTML=h;
+  let l='';
+  if(S.showSec && (!S.showParts || S.filter)) r.sections.forEach(s=>{
+    if(S.filter&&S.filter!==s.id) return;
+    l+=`<div class="seclabel" style="left:${s.box[0]/10}%;top:${s.box[1]/10}%;background:${secColour(s.type)}">${esc(s.name)}</div>`;
+  });
+  if(S.showParts) r.components.forEach(p=>{
+    if(S.filter && p.section_id!==S.filter) return;
+    const cx=(p.box[0]+p.box[2]/2)/10, cy=(p.box[1]+p.box[3]/2)/10;
+    l+=`<div class="pin ${S.selected===p.id?'sel':''}" data-part="${esc(p.id)}" style="left:${cx}%;top:${cy}%;background:${partColour(p)}">${p._n}</div>`;
+  });
+  labels.innerHTML=l;
+}
+
+function renderList(){
+  const q=$('partSearch').value.trim().toLowerCase();
+  const items=S.scan.components.filter(p=>{
+    if(S.filter && p.section_id!==S.filter) return false;
+    if(!q) return true;
+    return [p.name,p.ref,p.type,p.markings,p.value,p.role].join(' ').toLowerCase().includes(q);
+  });
+  $('partCount').textContent=`(${items.length}${items.length!==S.scan.components.length?' of '+S.scan.components.length:''})`;
+  $('partList').innerHTML = items.map(p=>`<div class="part ${S.selected===p.id?'sel':''}" data-part="${esc(p.id)}" id="li-${esc(p.id)}">
+     <div class="num" style="background:${partColour(p)}">${p._n}</div>
+     <div style="flex:1;min-width:0"><div class="t">${esc(p.name)}${p.ref?` <span class="muted">· ${esc(p.ref)}</span>`:''}${p.confidence!=='high'?`<span class="conf ${p.confidence==='low'?'low':''}">${esc(p.confidence)} confidence</span>`:''}</div>
+     <div class="small muted">${p.markings?`<b style="color:var(--text)">${esc(p.markings)}</b> · `:(p.readable===false?'markings unreadable · ':'')}${esc(secById(p.section_id)?.name||'')}</div>
+     <div class="small">${esc(p.role)}</div></div></div>`).join('') || '<p class="muted small">No parts match.</p>';
+}
+
+function refresh(){ renderLegend(); renderOverlay(); renderList(); }
+
+/* ---------- zoom ---------- */
+function setZoom(z){ S.zoom=Math.max(1,Math.min(4,z)); $('board').style.width=(S.zoom*100)+'%'; $('zoomLbl').textContent=Math.round(S.zoom*100)+'%'; }
+
+function focusPart(p){
+  if(S.zoom<2) setZoom(2);
+  requestAnimationFrame(()=>{
+    const sc=$('scroller'), b=$('board');
+    const cx=(p.box[0]+p.box[2]/2)/1000*b.clientWidth, cy=(p.box[1]+p.box[3]/2)/1000*b.clientHeight;
+    sc.scrollTo({left:cx-sc.clientWidth/2, top:cy-sc.clientHeight/2, behavior:'smooth'});
+  });
+}
+
+/* ---------- part detail ---------- */
+function selectPart(id, open=true){
+  const p=S.scan.components.find(c=>c.id===id); if(!p) return;
+  S.selected=id; renderOverlay(); renderList(); focusPart(p);
+  if(open) openPart(p);
+}
+
+function dsLinks(q){
+  if(!q) return '';
+  const e=encodeURIComponent(q);
+  return `<h4>Datasheet & suppliers</h4><div class="links">
+    <a target="_blank" rel="noopener" href="https://www.alldatasheet.com/view.jsp?Searchword=${e}">AllDatasheet</a>
+    <a target="_blank" rel="noopener" href="https://octopart.com/search?q=${e}">Octopart</a>
+    <a target="_blank" rel="noopener" href="https://uk.farnell.com/search?st=${e}">Farnell</a>
+    <a target="_blank" rel="noopener" href="https://www.mouser.co.uk/c/?q=${e}">Mouser</a>
+    <a target="_blank" rel="noopener" href="https://uk.rs-online.com/web/c/?searchTerm=${e}">RS</a>
+    <a target="_blank" rel="noopener" href="https://www.google.com/search?q=${e}+datasheet+pdf">Google</a></div>`;
+}
+
+function openPart(p){
+  const sec=secById(p.section_id);
+  $('pTitle').textContent=`${p._n}. ${p.name}`;
+  $('pSub').innerHTML=`${p.ref?esc(p.ref)+' · ':''}<span style="color:${partColour(p)}">${esc(sec?.name||'')}</span> · ${esc(p.confidence)} confidence`;
+  const crop=cropCanvas(p.box,700);
+  const kv=[['Markings', p.markings||(p.readable===false?'Not readable in photo':'—')],['Value',p.value],['Package',p.package],['Type',(p.type||'').replace(/_/g,' ')]].filter(x=>x[1]);
+  const hz = sec && sec.hazard==='danger' ? `<div class="errbox small" style="margin-top:10px"><b>Mains-side part.</b> Only test with the board unplugged and the bulk capacitor discharged.</div>`:'';
+  $('pBody').innerHTML = `
+    ${crop?`<img class="crop" src="${crop.toDataURL('image/jpeg',.9)}" alt="Close-up">`:''}
+    ${hz}
+    <h4>Role on this board</h4><div>${esc(p.role)}</div>
+    <h4>From the scan</h4><div class="kv">${kv.map(([k,v])=>`<div>${esc(k)}</div><div>${esc(v)}</div>`).join('')}</div>
+    <div id="pMore">${S.details[p.id]?'':`<button class="btn primary block" style="margin-top:16px" id="moreBtn">🔍 Full details, testing & replacement</button>
+      <p class="small muted">${S.demo?'Demo mode shows built-in guidance. With your proxy set, this re-reads the close-up for a fuller answer.':'Re-reads the close-up and looks up how to test and replace it.'}</p>`}</div>
+    <div id="pGuide">${quickGuide(p)}</div>
+    <div id="pLinks">${dsLinks(p.markings)}</div>`;
+  if(S.details[p.id]) renderDetail(S.details[p.id]);
+  else $('moreBtn').onclick=()=>loadDetail(p, crop);
+  $('sheet').classList.remove('hidden'); $('sheetBg').classList.remove('hidden'); $('sheet').scrollTop=0;
+}
+
+async function loadDetail(p, crop){
+  if(S.demo || !cfg().proxy){
+    if(!S.demo){ openSettings(); return; }
+    $('pMore').innerHTML='<p class="small muted">Demo mode: connect your proxy in Settings to get AI detail for real boards. Built-in guidance is shown below.</p>'; return;
+  }
+  $('pMore').innerHTML='<div class="spinner"></div><p class="small muted" style="text-align:center">Looking closer…</p>';
+  try{
+    const sec=secById(p.section_id);
+    const content=[];
+    if(crop) content.push({type:'image', source:{type:'base64', media_type:'image/jpeg', data:b64(crop,.92)}});
+    content.push({type:'text', text:`Component from a board identified as "${S.scan.device_guess}".
+Scan says: name "${p.name}", type "${p.type}", ref "${p.ref||''}", markings "${p.markings||'unreadable'}", value "${p.value||''}", section "${sec?.name||''}" (${sec?.type||''}), role: ${p.role}
+User's note about the device: ${$('note').value.trim()||'none'}`});
+    const d=await callClaude({system:DETAIL_SYSTEM, content, tool:DETAIL_TOOL, maxTokens:3000});
+    S.details[p.id]=d; renderDetail(d);
+  }catch(e){ $('pMore').innerHTML=`<div class="errbox small" style="margin-top:12px">${esc(e.message)}</div>`; }
+}
+
+function renderDetail(d){
+  $('pMore').innerHTML = `
+    <h4>Identification</h4><div>${esc(d.identification)}</div>
+    <h4>What it does</h4><div>${esc(d.function_in_circuit)}</div>
+    ${d.specs?.length?`<h4>Key specs</h4><div class="kv">${d.specs.map(s=>`<div>${esc(s.label)}</div><div>${esc(s.value)}</div>`).join('')}</div>`:''}
+    <h4>How to test</h4>${(d.how_to_test||[]).map(t=>`<div class="test"><b>${esc(t.method)}</b><ol>${(t.steps||[]).map(s=>`<li>${esc(s)}</li>`).join('')}</ol></div>`).join('')}
+    ${d.common_failures?.length?`<h4>Common failures</h4><ul>${d.common_failures.map(s=>`<li>${esc(s)}</li>`).join('')}</ul>`:''}
+    <h4>Replacement</h4><div>${esc(d.replacement?.notes)}</div>${d.replacement?.suggested_parts?.length?`<ul>${d.replacement.suggested_parts.map(s=>`<li>${esc(s)}</li>`).join('')}</ul>`:''}
+    ${d.safety?.length?`<h4>Safety</h4><ul>${d.safety.map(s=>`<li>${esc(s)}</li>`).join('')}</ul>`:''}`;
+  $('pGuide').innerHTML='';
+  if(d.datasheet_query) $('pLinks').innerHTML=dsLinks(d.datasheet_query);
+}
+
+/* ---------- built-in quick test guides (offline fallback) ---------- */
+const GUIDES = [
+  [/electrolytic|capacitor_e|bulk/i, 'Electrolytic capacitor', ['Look for a domed or split top, leaking electrolyte or a raised base — any of these means replace it.','Discharge first (large caps via a suitable resistor), then check capacitance and ESR with an ESR/LCR meter; in-circuit ESR readings are usually valid.','Replace with the same capacitance, equal or higher voltage, 105 °C rated, low-ESR type, observing polarity.']],
+  [/capacitor|x2|y1|y2|film|ceramic/i, 'Capacitor', ['Check for cracks, burn marks or bulging.','Out of circuit, measure capacitance; a short or very low resistance means failed.','X and Y safety capacitors must be replaced with the same safety class (X2/Y1/Y2) and voltage rating.']],
+  [/fuse/i, 'Fuse', ['Power off. Measure continuity across the fuse — near 0 Ω is good, open circuit is blown.','A blackened or shattered fuse usually means a short elsewhere (often the bridge rectifier, switching MOSFET or MOV). Find the cause before replacing.','Replace with the same current, speed (F/T) and voltage rating — never higher.']],
+  [/varistor|mov/i, 'Varistor (MOV)', ['Look for cracks, chips or scorching — a surge-hit MOV often blows the fuse.','Out of circuit it should read open circuit on a meter.','Replace with the same voltage and disc size.']],
+  [/bridge/i, 'Bridge rectifier', ['Use diode mode. Each of the four diodes should read ~0.5–0.7 V one way and open the other way.','A reading near 0 V in both directions means a shorted diode — a common cause of blown fuses.']],
+  [/diode|zener|schottky/i, 'Diode', ['Diode mode: about 0.5–0.7 V forward (0.2–0.4 V Schottky), open in reverse.','Low reading both ways = shorted; open both ways = open circuit. Lift one leg if in-circuit readings are confusing.']],
+  [/transformer|inductor|choke|coil/i, 'Transformer / inductor', ['Power off. Check each winding has continuity (low resistance).','Check there is no continuity between primary and secondary windings, or between windings and the core.','Look for burnt varnish or a smell — shorted turns may still show continuity.']],
+  [/opto/i, 'Optocoupler', ['Diode mode across the LED side (pins 1–2): ~1.0–1.2 V forward.','For a proper test, power the LED via a resistor from a bench PSU and check the output transistor switches.']],
+  [/mosfet|transistor|igbt|triac/i, 'Transistor / MOSFET / triac', ['Power off. Check for shorts between all pins — a short drain–source (or collector–emitter) is the classic failure.','Out of circuit, use diode mode to check junctions or the MOSFET body diode.','Check the heatsink mounting and insulator pad when refitting.']],
+  [/regulator|7805|ldo|78|lm317/i, 'Voltage regulator', ['With the board powered (and only if safe), measure input and output to ground.','Correct input but wrong or missing output suggests a faulty regulator or an overloaded output — check for shorts on the output rail with power off.']],
+  [/relay/i, 'Relay', ['Power off. Measure coil resistance — usually tens to hundreds of ohms; open means failed coil.','Apply the rated coil voltage from a bench PSU and listen for the click; check contacts switch with continuity mode.','Pitted or welded contacts are common in appliances switching heaters or motors.']],
+  [/crystal|resonator/i, 'Crystal / resonator', ['Hard to test with a meter. With an oscilloscope, look for a steady sine wave on its pins when powered (use a x10 probe).','Check for cracked solder joints, which are common.']],
+  [/micro|mcu|\bic\b|chip|eeprom/i, 'Integrated circuit', ['Check its supply pins first — most IC "faults" are missing power.','Look for burns or cracks in the package.','Read the part number and check the datasheet pinout before probing.']],
+  [/resistor/i, 'Resistor', ['Read the colour code or SMD code, then measure; in-circuit readings may be lower due to parallel paths.','Burnt or open resistors usually point to another failed part — look for the cause.']],
+  [/connector|header|terminal/i, 'Connector', ['Look for discoloured, burnt or loose pins — common with high-current connections.','Check continuity through the connector and its solder joints.']]
+];
+function quickGuide(p){
+  const key=[p.type,p.name].join(' ');
+  const g=GUIDES.find(([re])=>re.test(key));
+  if(!g) return `<h4>General checks</h4><ul><li>Look for burn marks, cracks, swelling and dry or cracked solder joints.</li><li>Power off and check for shorts with a meter before powering again.</li></ul>`;
+  return `<h4>Quick test guide · ${esc(g[1])}</h4><ul>${g[2].map(s=>`<li>${esc(s)}</li>`).join('')}</ul>`;
+}
+
+/* ---------- demo board ---------- */
+function demoSVG(){
+  const W=1000,H=700;
+  const cap=(x,y,r,label,fill='#20304a')=>`<circle cx="${x}" cy="${y}" r="${r}" fill="${fill}" stroke="#9fb3c8" stroke-width="2"/><circle cx="${x}" cy="${y}" r="${r*0.55}" fill="none" stroke="#5f738a"/><text x="${x}" y="${y+4}" font-size="${Math.max(9,r/3)}" fill="#d0dbe6" text-anchor="middle" font-family="Arial">${label}</text>`;
+  const ic=(x,y,w,h,label,pins=4)=>{let s=`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#151515" rx="3"/>`;for(let i=0;i<pins;i++){const px=x+8+i*((w-16)/(pins-1||1));s+=`<rect x="${px-3}" y="${y-7}" width="6" height="7" fill="#c9c9c9"/><rect x="${px-3}" y="${y+h}" width="6" height="7" fill="#c9c9c9"/>`;}return s+`<text x="${x+w/2}" y="${y+h/2+4}" font-size="11" fill="#bbb" text-anchor="middle" font-family="Arial">${label}</text>`;};
+  const res=(x,y,label,rot=0)=>`<g transform="rotate(${rot} ${x+20} ${y+6})"><rect x="${x}" y="${y}" width="40" height="12" rx="5" fill="#d9c7a0"/><rect x="${x+8}" y="${y}" width="4" height="12" fill="#8b4513"/><rect x="${x+16}" y="${y}" width="4" height="12" fill="#222"/><rect x="${x+24}" y="${y}" width="4" height="12" fill="#c00"/></g><text x="${x+20}" y="${y-4}" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">${label}</text>`;
+  let s=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <rect width="${W}" height="${H}" fill="#0c5a33"/><rect x="8" y="8" width="${W-16}" height="${H-16}" fill="none" stroke="#0a4a2a" stroke-width="3"/>
+  <g stroke="#0e6b3d" stroke-width="6" fill="none" opacity=".9"><path d="M80 120 H200 V200 H300"/><path d="M80 210 H160 V300 H300"/><path d="M380 300 H470"/><path d="M640 330 H720 V250 H800"/><path d="M640 420 H760 V480 H860"/><path d="M560 520 V600 H720"/></g>
+  <rect x="520" y="40" width="10" height="620" fill="#0a3d22"/><text x="525" y="30" font-size="12" fill="#e8f5e9" text-anchor="middle" font-family="Arial">ISOLATION</text>`;
+  s+=`<rect x="30" y="100" width="70" height="130" rx="4" fill="#1d4ed8"/><circle cx="65" cy="135" r="14" fill="#9ca3af"/><circle cx="65" cy="195" r="14" fill="#9ca3af"/><text x="65" y="250" font-size="11" fill="#e8f5e9" text-anchor="middle" font-family="Arial">CN1 L N</text>`;
+  s+=`<rect x="130" y="95" width="80" height="26" rx="4" fill="#ddd"/><rect x="142" y="99" width="56" height="18" fill="#f5f5f5" stroke="#999"/><text x="170" y="140" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">F1 T2AL250V</text>`;
+  s+=`<circle cx="170" cy="190" r="22" fill="#1e3a8a"/><text x="170" y="194" font-size="9" fill="#ddd" text-anchor="middle" font-family="Arial">10D471K</text><text x="170" y="228" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">RV1</text>`;
+  s+=`<rect x="240" y="80" width="110" height="50" rx="4" fill="#f2c94c"/><text x="295" y="110" font-size="10" fill="#333" text-anchor="middle" font-family="Arial">0.1µF X2 275V</text><text x="295" y="145" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">CX1</text>`;
+  s+=`<rect x="240" y="170" width="100" height="90" rx="6" fill="#222"/><g stroke="#b87333" stroke-width="3"><path d="M250 185 H330"/><path d="M250 200 H330"/><path d="M250 215 H330"/><path d="M250 230 H330"/><path d="M250 245 H330"/></g><text x="290" y="278" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">LF1</text>`;
+  s+=ic(90,300,80,40,'KBP207',4).replace(/fill="#151515"/,'fill="#2b2b2b"')+`<text x="130" y="365" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">BD1</text>`;
+  s+=cap(290,420,75,'47µF 400V','#1f2f6b')+`<text x="290" y="512" font-size="11" fill="#e8f5e9" text-anchor="middle" font-family="Arial">C1</text>`;
+  s+=ic(80,450,90,40,'',3)+`<rect x="70" y="420" width="110" height="30" fill="#9aa4ad"/><text x="125" y="476" font-size="10" fill="#bbb" text-anchor="middle" font-family="Arial">TNY278</text><text x="125" y="515" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">U1 + heatsink</text>`;
+  s+=res(390,560,'R1 1M'); s+=res(390,610,'R2 47R');
+  s+=`<rect x="410" y="210" width="210" height="180" rx="8" fill="#e5e5e5"/><rect x="440" y="230" width="150" height="140" fill="#b45309"/><rect x="495" y="230" width="40" height="140" fill="#444"/><text x="515" y="408" font-size="11" fill="#e8f5e9" text-anchor="middle" font-family="Arial">T1 EE25</text>`;
+  s+=ic(445,450,60,36,'PC817',2)+`<text x="475" y="510" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">U2</text>`;
+  s+=`<rect x="650" y="300" width="40" height="22" fill="#111"/><text x="670" y="345" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">D5 SR360</text>`;
+  s+=cap(760,330,42,'1000µF 16V')+`<text x="760" y="388" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">C5</text>`;
+  s+=`<rect x="840" y="300" width="60" height="50" fill="#111"/><rect x="840" y="285" width="60" height="18" fill="#aaa"/><text x="870" y="330" font-size="10" fill="#bbb" text-anchor="middle" font-family="Arial">7805</text><text x="870" y="368" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">U3</text>`;
+  s+=ic(640,440,130,70,'STM8S003',8)+`<text x="705" y="535" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">U4</text>`;
+  s+=`<rect x="800" y="455" width="40" height="18" rx="9" fill="#c0c0c0"/><text x="820" y="490" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">Y1 8MHz</text>`;
+  s+=`<rect x="640" y="70" width="120" height="90" rx="4" fill="#1f6feb"/><text x="700" y="110" font-size="11" fill="#fff" text-anchor="middle" font-family="Arial">SRD-05VDC</text><text x="700" y="126" font-size="9" fill="#fff" text-anchor="middle" font-family="Arial">10A 250VAC</text><text x="700" y="178" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">K1</text>`;
+  s+=`<rect x="800" y="80" width="40" height="22" fill="#111"/><text x="820" y="120" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">Q1 S8050</text>`;
+  s+=`<rect x="870" y="70" width="90" height="90" rx="4" fill="#15803d"/><circle cx="895" cy="115" r="12" fill="#9ca3af"/><circle cx="935" cy="115" r="12" fill="#9ca3af"/><text x="915" y="178" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">CN2 LOAD</text>`;
+  s+=`<rect x="820" y="590" width="150" height="40" fill="#f5f5f5"/>${[0,1,2,3,4].map(i=>`<rect x="${832+i*28}" y="600" width="14" height="20" fill="#111"/>`).join('')}<text x="895" y="650" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">CN3 PANEL</text>`;
+  s+=`<g fill="#5b3b1a">${[0,1,2,3,4,5].map(i=>`<rect x="${600+i*16}" y="590" width="10" height="5"/>`).join('')}</g><text x="640" y="615" font-size="10" fill="#e8f5e9" text-anchor="middle" font-family="Arial">SMD R/C</text>`;
+  return 'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(s+'</svg>');
+}
+
+function demoData(){
+  const H=700, b=(x,y,w,h)=>[x, Math.round(y/H*1000), w, Math.round(h/H*1000)];
+  const P=(id,ref,name,type,markings,value,sec,role,box,conf='high')=>({id,ref,name,type,markings,value,package:'',section_id:sec,role,box,confidence:conf,readable:!!markings});
+  return normalise({
+    device_guess:'Small appliance control board (demo)',
+    board_summary:'Mains comes in at the left, is fused, surge-protected and filtered, then rectified to roughly 325 V DC. A small switch-mode controller drives the transformer, which steps the voltage down across the isolation slot. The low-voltage side produces 12 V and 5 V to run a microcontroller, which switches the load through a relay.',
+    image_quality:{rating:'good', advice:''},
+    sections:[
+      {id:'s1',name:'Mains input & filter',type:'mains',hazard:'danger',description:'Mains connector, fuse, surge varistor, X capacitor and filter choke. Stops interference getting back onto the mains and protects against surges.',box:b(25,70,335,215)},
+      {id:'s2',name:'Rectifier & HV switching',type:'psu_primary',hazard:'danger',description:'Bridge rectifier and bulk capacitor make ~325 V DC; the switch-mode IC chops it at high frequency to drive the transformer.',box:b(60,290,450,350)},
+      {id:'s3',name:'Transformer & feedback',type:'psu_secondary',hazard:'caution',description:'Steps voltage down and provides the isolation barrier. The optocoupler feeds output voltage back to the primary controller.',box:b(405,200,225,320)},
+      {id:'s4',name:'Low-voltage supply',type:'regulation',hazard:'none',description:'Rectifies and smooths the transformer output to ~12 V, then regulates down to 5 V for the logic.',box:b(640,280,280,120)},
+      {id:'s5',name:'Microcontroller',type:'mcu',hazard:'none',description:'The "brain": reads the front-panel buttons and decides when to switch the load on.',box:b(630,420,230,200)},
+      {id:'s6',name:'Relay output',type:'relay_switching',hazard:'danger',description:'A transistor drives the relay coil; the relay contacts switch mains to the load. The contacts side is at mains potential.',box:b(630,60,340,135)},
+      {id:'s7',name:'Front-panel connector',type:'io',hazard:'none',description:'Ribbon connector to the buttons and display.',box:b(810,580,170,85)}
+    ],
+    components:[
+      P('p1','CN1','Mains input terminal','connector','L N','','s1','Live and neutral come in here.',b(30,100,70,130)),
+      P('p2','F1','Glass fuse','fuse','T2AL250V','2 A slow-blow, 250 V','s1','Blows if the board draws too much current — first thing to check on a dead board.',b(130,95,80,26)),
+      P('p3','RV1','Varistor (MOV)','varistor','10D471K','470 V, 10 mm','s1','Clamps mains surges; often scorched if there was a spike.',b(148,168,44,44)),
+      P('p4','CX1','X2 safety capacitor','capacitor_film','0.1µF X2 275V','100 nF 275 V AC','s1','Filters interference across live and neutral.',b(240,80,110,50)),
+      P('p5','LF1','Common-mode choke','inductor','','','s1','Blocks high-frequency noise travelling along the mains wires.',b(240,170,100,90),'medium'),
+      P('p6','BD1','Bridge rectifier','bridge_rectifier','KBP207','2 A 1000 V','s2','Turns AC mains into pulsing DC.',b(90,300,80,40)),
+      P('p7','C1','Bulk electrolytic capacitor','capacitor_electrolytic','47µF 400V','47 µF 400 V','s2','Smooths the rectified mains to ~325 V DC. Can stay charged after unplugging.',b(215,345,150,150)),
+      P('p8','U1','Switch-mode controller with heatsink','voltage_regulator','TNY278','','s2','Switches the high-voltage DC on and off rapidly to drive the transformer.',b(70,420,110,80)),
+      P('p9','R1','Resistor','resistor','','1 MΩ (colour code)','s2','Bleeds charge / provides start-up bias.',b(390,556,40,16),'medium'),
+      P('p10','R2','Resistor','resistor','','47 Ω (colour code)','s2','Current-limiting / snubber resistor.',b(390,606,40,16),'medium'),
+      P('p11','T1','Switch-mode transformer','transformer','EE25','','s3','Steps the voltage down and isolates the low-voltage side from mains.',b(410,210,210,180)),
+      P('p12','U2','Optocoupler','optocoupler','PC817','','s3','Sends output-voltage feedback across the isolation gap using light.',b(445,443,60,50)),
+      P('p13','D5','Schottky diode','diode','SR360','3 A 60 V','s4','Rectifies the transformer output.',b(650,300,40,22)),
+      P('p14','C5','Output electrolytic capacitor','capacitor_electrolytic','1000µF 16V','1000 µF 16 V','s4','Smooths the 12 V rail. A bulging one here causes flickering or resets.',b(718,288,84,84)),
+      P('p15','U3','5 V linear regulator','voltage_regulator','7805','5 V 1 A','s4','Drops 12 V to a steady 5 V for the microcontroller.',b(840,285,60,65)),
+      P('p16','U4','Microcontroller','microcontroller','STM8S003','','s5','Runs the appliance program.',b(640,433,130,84)),
+      P('p17','Y1','Crystal','crystal','8MHz','8 MHz','s5','Sets the microcontroller clock speed.',b(800,455,40,18)),
+      P('p18','','SMD resistor/capacitor cluster','resistor','','','s5','Pull-ups, decoupling and signal conditioning around the microcontroller.',b(596,585,100,15),'low'),
+      P('p19','K1','Relay','relay','SRD-05VDC','5 V coil, 10 A 250 V AC contacts','s6','Switches mains to the load (heater/motor).',b(640,70,120,90)),
+      P('p20','Q1','Relay driver transistor','transistor','S8050','NPN','s6','Lets the microcontroller energise the relay coil.',b(800,80,40,22)),
+      P('p21','CN2','Load output terminal','connector','LOAD','','s6','Switched mains out to the load.',b(870,70,90,90)),
+      P('p22','CN3','Front-panel connector','connector','PANEL','','s7','Connects the buttons and display board.',b(820,590,150,40))
+    ],
+    safety_notes:[
+      'C1 (47 µF 400 V) can hold a dangerous charge after unplugging. Check it reads below about 5 V DC before touching the left half of the board.',
+      'Everything left of the isolation slot, plus the relay contacts and CN2, is at mains potential.',
+      'U1’s heatsink may be at high voltage — don’t use it as a meter ground.',
+      'If F1 has blown, check BD1, U1 and RV1 for shorts before fitting a new fuse.'
+    ]
+  });
+}
+
+function runDemo(){
+  S.demo=true; S.details={};
+  const url=demoSVG();
+  $('boardImg').src=url;
+  loadImage(url).then(img=>{ S.fullCanvas=toCanvas(img,2000); }).catch(()=>{});
+  S.scan=demoData(); renderResult();
+}
+
+/* ---------- settings ---------- */
+function openSettings(){
+  const c=cfg(); $('proxyUrl').value=c.proxy; $('appKey').value=c.key; $('model').value=c.model;
+  $('setSheet').classList.remove('hidden'); $('setBg').classList.remove('hidden');
+}
+function closeSettings(){ $('setSheet').classList.add('hidden'); $('setBg').classList.add('hidden'); }
+function closeSheet(){ $('sheet').classList.add('hidden'); $('sheetBg').classList.add('hidden'); }
+
+/* ---------- events ---------- */
+$('settingsBtn').onclick=openSettings;
+$('setClose').onclick=closeSettings; $('setBg').onclick=closeSettings;
+$('saveSettings').onclick=()=>{ store.set('proxy',$('proxyUrl').value.trim()); store.set('appKey',$('appKey').value.trim()); store.set('model',$('model').value); closeSettings(); refreshHint(); };
+$('cameraBtn').onclick=()=>$('cameraInput').click();
+$('fileBtn').onclick=()=>$('fileInput').click();
+$('cameraInput').onchange=e=>{ startScan(e.target.files[0]); e.target.value=''; };
+$('fileInput').onchange=e=>{ startScan(e.target.files[0]); e.target.value=''; };
+$('demoBtn').onclick=runDemo;
+$('newBtn').onclick=()=>{ closeSheet(); show('startView'); };
+$('errBack').onclick=()=>show('startView');
+$('sheetClose').onclick=closeSheet; $('sheetBg').onclick=closeSheet;
+$('tgSections').onclick=e=>{ S.showSec=!S.showSec; e.target.classList.toggle('on',S.showSec); renderOverlay(); };
+$('tgParts').onclick=e=>{ S.showParts=!S.showParts; e.target.classList.toggle('on',S.showParts); renderOverlay(); };
+$('zoomIn').onclick=()=>setZoom(S.zoom+0.5);
+$('zoomOut').onclick=()=>setZoom(S.zoom-0.5);
+$('partSearch').oninput=renderList;
+$('legend').onclick=e=>{ const c=e.target.closest('[data-sec]'); if(!c) return; const id=c.dataset.sec||null; S.filter = (id && S.filter!==id) ? id : null; refresh(); };
+$('board').onclick=e=>{
+  const p=e.target.closest('[data-part]'); if(p){ selectPart(p.dataset.part); return; }
+  const s=e.target.closest('[data-sec]'); if(s){ S.filter = S.filter===s.dataset.sec?null:s.dataset.sec; refresh(); }
+};
+$('partList').onclick=e=>{ const p=e.target.closest('[data-part]'); if(p) selectPart(p.dataset.part); };
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeSheet(); closeSettings(); } });
+
+refreshHint();
+})();
+</script>
+</body>
+</html>
