@@ -157,6 +157,7 @@
           <div id="labels"></div>
         </div>
       </div>
+      <p class="small" id="placeNote" style="margin:8px 0 0;color:var(--warn)"></p>
       <p class="small muted" style="margin:8px 0 0">Tap a numbered marker or a part in the list. Turn Parts off to see section names. Outlines are approximate.</p>
     </div>
 
@@ -179,6 +180,9 @@
     </div>
   </section>
 
+  <details class="card small hidden" id="rawCard"><summary class="muted">Raw scan result (for troubleshooting)</summary>
+    <button class="btn" style="margin:8px 0" id="copyRaw">Copy</button>
+    <pre id="rawData" style="white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto;font-size:11px"></pre></details>
   <footer>BoardScan prototype · AI identification can be wrong — always confirm markings and measurements before replacing parts.</footer>
 </main>
 
@@ -246,6 +250,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 function show(view){
+  const rc=document.getElementById('rawCard'); if(rc) rc.classList.toggle('hidden', view!=='resultView' || !S.raw);
   ['startView','scanView','errorView','resultView'].forEach(v => $(v).classList.toggle('hidden', v!==view));
   $('newBtn').classList.toggle('hidden', view==='startView');
   window.scrollTo(0,0);
@@ -390,16 +395,56 @@ async function startScan(file){
       {type:'text', text: note ? `The user says this board is from: ${note}` : 'No description of the device was given.'}
     ];
     const res = await callClaude({system:SCAN_SYSTEM, content, tool:SCAN_TOOL, maxTokens:8000});
-    S.scan = normalise(res);
+    S.raw = res;
+    S.scan = normalise(JSON.parse(JSON.stringify(res)));
     renderResult();
   }catch(e){ showError(e.message); }
 }
 
+/* Models sometimes return nested arrays as JSON strings, or boxes in other shapes — accept them all */
+function parseMaybe(v){
+  if(typeof v!=='string') return v;
+  const t=v.trim();
+  if(!/^[\[{]/.test(t)) return v;
+  try{ return JSON.parse(t); }catch(e){ return v; }
+}
+function asArray(v){
+  v=parseMaybe(v);
+  if(Array.isArray(v)) return v;
+  if(v && typeof v==='object') return Object.values(v);
+  return [];
+}
+function fixBox(b){
+  b=parseMaybe(b);
+  if(typeof b==='string'){ const n=b.match(/-?\d+(\.\d+)?/g); b=n?n.map(Number):null; }
+  if(b && !Array.isArray(b) && typeof b==='object'){
+    const g=(...k)=>{ for(const x of k) if(b[x]!=null) return Number(b[x]); return null; };
+    const x=g('x','left','x1','x_min','xmin'), y=g('y','top','y1','y_min','ymin');
+    let w=g('width','w'), h=g('height','h');
+    const x2=g('x2','right','x_max','xmax'), y2=g('y2','bottom','y_max','ymax');
+    if(w==null&&x2!=null&&x!=null) w=x2-x;
+    if(h==null&&y2!=null&&y!=null) h=y2-y;
+    b=[x,y,w,h];
+  }
+  if(!Array.isArray(b)||b.length<4) return null;
+  let [x,y,w,h]=b.slice(0,4).map(Number);
+  if([x,y,w,h].some(n=>!isFinite(n))) return null;
+  if(Math.max(x,y,w,h)<=1.0001){ x*=1000; y*=1000; w*=1000; h*=1000; }   // 0–1 scale
+  else if(Math.max(x,y,w,h)<=100.01 && Math.max(x+w,y+h)<=100.01){ x*=10; y*=10; w*=10; h*=10; } // percent
+  x=Math.max(0,Math.min(1000,x)); y=Math.max(0,Math.min(1000,y));
+  w=Math.max(4,Math.min(1000-x,w)); h=Math.max(4,Math.min(1000-y,h));
+  return [x,y,w,h].map(Math.round);
+}
 function normalise(r){
-  r.sections = (r.sections||[]).filter(s=>Array.isArray(s.box)&&s.box.length===4);
-  r.components = (r.components||[]).filter(c=>Array.isArray(c.box)&&c.box.length===4);
-  r.components.forEach((c,i)=>{ c._n=i+1; if(!c.id) c.id='p'+(i+1); });
-  r.safety_notes = r.safety_notes||[];
+  r=parseMaybe(r)||{};
+  if(r.input && !r.components) r=r.input;   // defensive
+  r.image_quality=parseMaybe(r.image_quality)||{};
+  r.sections=asArray(r.sections).map(parseMaybe).filter(s=>s&&typeof s==='object');
+  r.components=asArray(r.components).map(parseMaybe).filter(c=>c&&typeof c==='object');
+  r.sections.forEach((s,i)=>{ s.box=fixBox(s.box); if(!s.id) s.id='s'+(i+1); if(!s.hazard) s.hazard='none'; if(!s.type) s.type='other'; });
+  r.components.forEach((c,i)=>{ c.box=fixBox(c.box); c._n=i+1; if(!c.id) c.id='p'+(i+1); if(!c.confidence) c.confidence='medium'; if(!c.name) c.name=c.type||'Component'; });
+  r.safety_notes=asArray(r.safety_notes).filter(x=>typeof x==='string');
+  r._unplaced=r.components.filter(c=>!c.box).length;
   return r;
 }
 
@@ -419,6 +464,10 @@ function renderResult(){
   $('safetyCard').classList.toggle('hidden', !r.safety_notes.length);
   $('safetyList').innerHTML = r.safety_notes.map(n=>`<li>${esc(n)}</li>`).join('');
   renderLegend(); renderOverlay(); renderList();
+  const placed=r.components.length-r._unplaced;
+  $('placeNote').textContent = !r.components.length ? 'No parts were returned for this photo — try again, or a closer photo.' :
+    (r._unplaced ? `${placed} of ${r.components.length} parts could be placed on the photo; the rest are in the list below.` : '');
+  try{ $('rawData').textContent=JSON.stringify(S.raw ?? r, null, 2); }catch(e){}
   show('resultView');
 }
 
@@ -433,11 +482,13 @@ function renderOverlay(){
   const svg=$('overlay'), labels=$('labels'); const r=S.scan;
   let h='';
   if(S.showSec) r.sections.forEach(s=>{
+    if(!s.box) return;
     const [x,y,w,hh]=s.box, c=secColour(s.type), dim=S.filter&&S.filter!==s.id;
     h+=`<rect class="sec-rect ${dim?'dim':''}" data-sec="${esc(s.id)}" x="${x}" y="${y}" width="${w}" height="${hh}" rx="4" fill="${c}" fill-opacity="${S.filter===s.id?0.28:0.16}" stroke="${c}" ${s.hazard==='danger'?'stroke-dasharray="6 4"':''}/>`;
   });
   if(S.showParts) r.components.forEach(p=>{
     if(S.filter && p.section_id!==S.filter) return;
+    if(!p.box) return;
     const [x,y,w,hh]=p.box;
     h+=`<rect class="part-rect ${S.selected===p.id?'sel':''}" data-part="${esc(p.id)}" x="${x}" y="${y}" width="${w}" height="${hh}" rx="2" stroke="${partColour(p)}"/>`;
   });
@@ -445,10 +496,12 @@ function renderOverlay(){
   let l='';
   if(S.showSec && (!S.showParts || S.filter)) r.sections.forEach(s=>{
     if(S.filter&&S.filter!==s.id) return;
+    if(!s.box) return;
     l+=`<div class="seclabel" style="left:${s.box[0]/10}%;top:${s.box[1]/10}%;background:${secColour(s.type)}">${esc(s.name)}</div>`;
   });
   if(S.showParts) r.components.forEach(p=>{
     if(S.filter && p.section_id!==S.filter) return;
+    if(!p.box) return;
     const cx=(p.box[0]+p.box[2]/2)/10, cy=(p.box[1]+p.box[3]/2)/10;
     l+=`<div class="pin ${S.selected===p.id?'sel':''}" data-part="${esc(p.id)}" style="left:${cx}%;top:${cy}%;background:${partColour(p)}">${p._n}</div>`;
   });
@@ -476,6 +529,7 @@ function refresh(){ renderLegend(); renderOverlay(); renderList(); }
 function setZoom(z){ S.zoom=Math.max(1,Math.min(4,z)); $('board').style.width=(S.zoom*100)+'%'; $('zoomLbl').textContent=Math.round(S.zoom*100)+'%'; }
 
 function focusPart(p){
+  if(!p.box) return;
   if(S.zoom<2) setZoom(2);
   requestAnimationFrame(()=>{
     const sc=$('scroller'), b=$('board');
@@ -664,7 +718,7 @@ function demoData(){
 }
 
 function runDemo(){
-  S.demo=true; S.details={};
+  S.demo=true; S.details={}; S.raw=null;
   const url=demoSVG();
   $('boardImg').src=url;
   loadImage(url).then(img=>{ S.fullCanvas=toCanvas(img,2000); }).catch(()=>{});
@@ -702,6 +756,7 @@ $('board').onclick=e=>{
   const s=e.target.closest('[data-sec]'); if(s){ S.filter = S.filter===s.dataset.sec?null:s.dataset.sec; refresh(); }
 };
 $('partList').onclick=e=>{ const p=e.target.closest('[data-part]'); if(p) selectPart(p.dataset.part); };
+$('copyRaw').onclick=()=>{ try{ navigator.clipboard.writeText($('rawData').textContent); $('copyRaw').textContent='Copied'; }catch(e){} };
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeSheet(); closeSettings(); } });
 
 refreshHint();
