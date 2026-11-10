@@ -82,6 +82,12 @@
   ol,ul{padding-left:20px;margin:6px 0}
   .test{background:var(--panel2);border-radius:10px;padding:10px 12px;margin-bottom:8px}
   .test b{display:block;margin-bottom:4px}
+  .meter{background:#12324a;border:1px solid var(--accent);border-radius:8px;padding:3px 8px;font-size:13px;font-weight:700}
+  .tag{border:1px solid var(--line);border-radius:8px;padding:3px 8px;font-size:12px;color:var(--muted)}
+  .tag.warnTag{border-color:var(--warn);color:var(--warn)}
+  .saved{display:flex;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line);cursor:pointer}
+  .saved img{width:56px;height:56px;object-fit:cover;border-radius:8px;flex:none;background:#000}
+  .saved .t{font-weight:600}
   .preview{max-height:240px;max-width:100%;border-radius:10px;display:block;margin:10px auto}
   footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
 </style>
@@ -113,6 +119,11 @@
       <input type="file" id="fileInput" accept="image/*" class="hidden">
       <p id="noProxyHint" class="small muted hidden" style="margin-top:10px">To scan your own photos, add your proxy URL in ⚙︎ Settings. The demo works without it.</p>
     </div>
+
+    <div class="card hidden" id="savedCard">
+      <h2>Saved scans</h2>
+      <div id="savedList"></div>
+    </div>
   </section>
 
   <!-- SCANNING -->
@@ -139,6 +150,7 @@
       <h2 id="deviceGuess"></h2>
       <div id="boardSummary" class="muted"></div>
       <div id="qualityBox"></div>
+      <div class="small" id="savedNote" style="margin-top:6px;color:var(--ok)"></div>
     </div>
 
     <div class="card">
@@ -307,11 +319,12 @@ async function callClaude({system, content, tool, maxTokens}){
     throw new Error(`The analysis service returned an error (${r.status}): ${m}`);
   }
   const block = (data.content||[]).find(b=>b.type==='tool_use');
-  if(block) return block.input;
+  if(data.stop_reason==='max_tokens' && !block) throw new Error('The answer was cut short. Please try again.');
+  if(block) return deepParse(block.input);
   // Fallback: model replied in text — try to pull JSON out of it
   const text = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
   const m = text.match(/\{[\s\S]*\}/);
-  if(m){ try{ return JSON.parse(m[0]); }catch(e){} }
+  if(m){ try{ return deepParse(JSON.parse(m[0])); }catch(e){} }
   if(data.stop_reason==='max_tokens') throw new Error('The board has so many parts the answer was cut short. Try photographing half the board at a time.');
   throw new Error('The analysis came back without structured results. Please try again.');
 }
@@ -352,36 +365,167 @@ const SCAN_TOOL = {
 const SCAN_SYSTEM = `You are an experienced electronics repair technician helping volunteers at a UK repair café (230 V 50 Hz mains) understand a circuit board from a photo.
 Tasks:
 1. Divide the board into functional sections (mains input & filtering, PSU primary, isolation/transformer, step-down secondary, regulation, microcontroller/logic, relay or motor drivers, connectors, etc.). Give each a bounding box covering the area it occupies. Mark the mains side and anything at mains potential as hazard "danger".
-2. List the significant components with a bounding box each. Prioritise larger and repair-relevant parts (fuses, capacitors, rectifiers, transformers, regulators, transistors/MOSFETs, ICs, relays, connectors). Group dense clusters of tiny SMD passives into a single entry rather than listing each. Aim for at most about 60 entries.
+2. List the significant components with a bounding box each. Prioritise larger and repair-relevant parts (fuses, capacitors, rectifiers, transformers, regulators, transistors/MOSFETs, ICs, relays, connectors). Include every through-hole component you can see. Group dense clusters of tiny SMD passives into a single entry rather than listing each. Up to about 80 entries.
 3. Be honest: only report markings you can actually read. If text is unreadable set readable=false, leave markings empty and lower confidence. Never invent part numbers.
 4. Boxes: [x, y, width, height] normalised 0–1000 to the image, origin top-left. Be as accurate as you can.
 5. Safety notes: practical warnings specific to this board (charged bulk capacitors, isolation gap, hot heatsinks, etc.).
 Use plain English that a capable hobbyist understands. Use British spelling.`;
 
+const METER_MODES = ['diode','resistance','continuity','capacitance','dc_voltage','ac_voltage','esr','current','frequency','other'];
+const PACKAGES = ['axial_2','radial_2','crystal_2','to92_3','to220_3','sot23_3','sip','dip','soic','bridge_4','relay','transformer','connector','other'];
+const WAVES = ['dc','dc_with_ripple','sine','rectified_sine','square','pwm','pulse','clock','sawtooth','noise','none'];
+
 const DETAIL_TOOL = {
   name:'component_detail',
-  description:'Detailed repair information about one component.',
-  input_schema:{type:'object', required:['identification','function_in_circuit','how_to_test','common_failures','replacement','safety','datasheet_query'], properties:{
+  description:'Detailed repair and test information about one component.',
+  input_schema:{type:'object', required:['identification','function_in_circuit','diagram','meter_tests','scope','common_failures','replacement','safety','datasheet_query'], properties:{
     identification:{type:'string', description:'What the part is, including part number decoding if markings are legible. Say clearly if it cannot be identified exactly.'},
     function_in_circuit:{type:'string'},
-    specs:{type:'array', items:{type:'object', required:['label','value'], properties:{label:{type:'string'}, value:{type:'string'}}}, description:'Key ratings, only where known or decoded from markings.'},
-    how_to_test:{type:'array', items:{type:'object', required:['method','steps'], properties:{
-      method:{type:'string', description:'e.g. "Visual check", "In-circuit, power off (multimeter)", "Out of circuit", "Powered (with care)".'},
-      steps:{type:'array', items:{type:'string'}} }}},
-    common_failures:{type:'array', items:{type:'string'}, description:'Typical failure modes and visible signs.'},
+    specs:{type:'array', items:{type:'object', required:['label','value'], properties:{label:{type:'string'}, value:{type:'string'}}}},
+    diagram:{type:'object', required:['package','pins','orientation_note'], description:'Pinout of the component as seen from the top, for drawing a test diagram.', properties:{
+      package:{type:'string', enum:PACKAGES},
+      pins:{type:'array', description:'Every pin in order, numbered from 1 as in the datasheet. For DIP/SOIC use the standard anticlockwise numbering from pin 1 (top-left, notch at top).', items:{type:'object', required:['n','label'], properties:{n:{type:'integer'}, label:{type:'string', description:'Short name, e.g. "Anode", "K", "Gate", "Vin", "Coil +", "COM", "NO".'}}}},
+      orientation_note:{type:'string', description:'How to find pin 1 / polarity on the real part (stripe, notch, dot, flat side, minus band).'} }},
+    meter_tests:{type:'array', description:'Multimeter tests in a sensible order (safest first).', items:{type:'object', required:['name','power_state','in_circuit','meter_mode','meter_setting','red_pin','black_pin','expected'], properties:{
+      name:{type:'string'},
+      power_state:{type:'string', enum:['power_off','power_on']},
+      in_circuit:{type:'boolean'},
+      meter_mode:{type:'string', enum:METER_MODES},
+      meter_setting:{type:'string', description:'Exact dial setting, e.g. "Diode test", "Ω 2 kΩ range", "20 V DC", "Capacitance".'},
+      red_pin:{type:'integer', description:'Pin number for the red probe, or 0 if it goes somewhere other than this part.'},
+      black_pin:{type:'integer', description:'Pin number for the black probe, or 0 if elsewhere (e.g. board ground).'},
+      red_note:{type:'string', description:'Where the red probe goes if red_pin is 0.'},
+      black_note:{type:'string', description:'Where the black probe goes if black_pin is 0.'},
+      expected:{type:'string', description:'Reading for a good part.'},
+      fault_signs:{type:'string', description:'Readings that indicate a fault.'} }}},
+    scope:{type:'object', required:['applicable','reason'], properties:{
+      applicable:{type:'boolean'},
+      reason:{type:'string', description:'Why a scope is or is not useful for this part.'},
+      probe_point:{type:'string'}, ground_point:{type:'string'},
+      probe_pin:{type:'integer', description:'Pin for the probe tip, 0 if elsewhere.'},
+      ground_pin:{type:'integer', description:'Pin for the ground clip, 0 if elsewhere.'},
+      probe_attenuation:{type:'string', description:'e.g. "x10"'},
+      coupling:{type:'string', description:'DC or AC'},
+      volts_per_div:{type:'string'}, time_per_div:{type:'string'}, trigger:{type:'string', description:'e.g. "Rising edge, auto, 2 V"'},
+      waveform:{type:'string', enum:WAVES},
+      frequency:{type:'string'}, amplitude:{type:'string'},
+      expected_trace:{type:'string', description:'Describe what a healthy trace looks like.'},
+      fault_trace:{type:'string', description:'What a faulty trace looks like.'},
+      safety:{type:'string'} }},
+    common_failures:{type:'array', items:{type:'string'}},
     replacement:{type:'object', required:['notes'], properties:{notes:{type:'string'}, suggested_parts:{type:'array', items:{type:'string'}}}},
     safety:{type:'array', items:{type:'string'}},
-    datasheet_query:{type:'string', description:'Best search term for the datasheet (part number), or empty if unknown.'}
+    datasheet_query:{type:'string'}
   }}
 };
 
-const DETAIL_SYSTEM = `You are an experienced electronics repair technician advising a UK repair café volunteer. You are given a close-up crop of one component from a circuit board and context from an earlier whole-board scan. Re-read the markings from the close-up if you can. Give practical, safe testing steps using a multimeter (and oscilloscope / bench PSU where useful). Never invent part numbers; say when something cannot be identified. British spelling, plain English.`;
+const DETAIL_SYSTEM = `You are an experienced electronics repair technician advising a UK repair café volunteer. You are given a close-up crop of one component from a circuit board and context from an earlier whole-board scan. Re-read the markings from the close-up if you can. Never invent part numbers; say when something cannot be identified.
+Give: a pinout for a diagram; multimeter tests with the exact dial setting and which pin each probe goes on; and oscilloscope guidance (probe x1/x10, coupling, V/div, time/div, trigger, where to put the probe and ground clip, the expected waveform with frequency and amplitude). Only mark the scope as applicable if a scope genuinely helps for this part.
+SAFETY: for anything on the mains/primary side, tests must be done powered off with the bulk capacitor discharged. For scope work on the primary side, state clearly that the scope ground clip must never go on mains-referenced circuitry unless the device is fed from an isolation transformer or a differential probe is used.
+British spelling, plain English.`;
+
+/* ---------- part diagrams & scope traces ---------- */
+const arr = v => Array.isArray(v) ? v : [];
+const METER_LABEL = {diode:['→|','Diode test'],resistance:['Ω','Resistance'],continuity:['🔊','Continuity'],capacitance:['⊣⊢','Capacitance'],dc_voltage:['V⎓','DC volts'],ac_voltage:['V~','AC volts'],esr:['ESR','ESR'],current:['A','Current'],frequency:['Hz','Frequency'],other:['?','Other']};
+
+function pinLayout(pkg, pins){
+  const n = pins.length;
+  const P=[]; let body, extra='', H=200;
+  const at=(i,x,y,lx,ly,anchor)=>P.push({...pins[i],x,y,lx,ly,anchor});
+  if(['axial_2','crystal_2'].includes(pkg) || (n===2 && !['radial_2'].includes(pkg))){
+    body={x:110,y:78,w:100,h:44,rx:pkg==='crystal_2'?8:22};
+    extra=`<line x1="40" y1="100" x2="110" y2="100"/><line x1="210" y1="100" x2="280" y2="100"/>`;
+    if(n>0) at(0,40,100,40,130,'middle'); if(n>1) at(1,280,100,280,130,'middle');
+    H=150;
+  } else if(pkg==='radial_2'){
+    body={x:115,y:20,w:90,h:105,rx:14};
+    extra=`<line x1="135" y1="125" x2="135" y2="160"/><line x1="185" y1="125" x2="185" y2="160"/>`;
+    if(n>0) at(0,135,165,110,192,'middle'); if(n>1) at(1,185,165,210,192,'middle');
+  } else if(['to92_3','to220_3','sot23_3'].includes(pkg) || (n===3 && pkg!=='dip')){
+    body={x:95,y:pkg==='to220_3'?60:40,w:130,h:pkg==='to220_3'?60:75,rx:pkg==='to92_3'?30:6};
+    if(pkg==='to220_3') extra+=`<rect x="105" y="15" width="110" height="45" rx="4" fill="#8b949e" stroke="#9aa7b4"/><circle cx="160" cy="37" r="9" fill="#0f1419"/>`;
+    const xs=[115,160,205];
+    for(let i=0;i<Math.min(n,3);i++){ extra+=`<line x1="${xs[i]}" y1="${body.y+body.h}" x2="${xs[i]}" y2="160"/>`; at(i,xs[i],165,xs[i],192,'middle'); }
+  } else if(pkg==='bridge_4' && n===4){
+    body={x:110,y:45,w:100,h:100,rx:6};
+    const c=[[85,30],[235,30],[235,160],[85,160]];
+    c.forEach((p,i)=>at(i,p[0],p[1],p[0]+(i===0||i===3?-12:12),p[1]+(i<2?-2:14),i===0||i===3?'end':'start'));
+    H=190;
+  } else if(pkg==='sip'){
+    const gap=Math.min(40,240/Math.max(1,n-1)); const x0=160-gap*(n-1)/2;
+    body={x:x0-20,y:40,w:gap*(n-1)+40,h:70,rx:6};
+    pins.forEach((p,i)=>{ const x=x0+i*gap; extra+=`<line x1="${x}" y1="110" x2="${x}" y2="160"/>`; at(i,x,165,x,192,'middle'); });
+  } else {
+    // DIP/SOIC/relay/transformer/connector/other: two columns
+    const isDip = ['dip','soic'].includes(pkg);
+    const left=Math.ceil(n/2), right=n-left, rows=Math.max(left,right,1), pitch=30;
+    body={x:120,y:20,w:80,h:rows*pitch+10,rx:6};
+    if(isDip) extra+=`<path d="M150 20 a10 10 0 0 0 20 0" fill="#0f1419" stroke="#9aa7b4"/><circle cx="133" cy="34" r="3" fill="#9aa7b4"/>`;
+    for(let i=0;i<left;i++){ const y=20+pitch/2+5+i*pitch; extra+=`<line x1="96" y1="${y}" x2="120" y2="${y}"/>`; at(i,92,y,72,y+4,'end'); }
+    for(let j=0;j<right;j++){
+      const idx=left+j; const row = isDip ? (rows-1-j) : j;
+      const y=20+pitch/2+5+row*pitch; extra+=`<line x1="200" y1="${y}" x2="224" y2="${y}"/>`; at(idx,228,y,248,y+4,'start');
+    }
+    H=Math.max(110, body.y+body.h+25);
+  }
+  return {P,body,extra,H};
+}
+
+function pinDiagram(diag, red, black){
+  const pins = arr(diag?.pins).filter(p=>p && p.n!=null).map(p=>({n:Number(p.n), label:String(p.label||'')}));
+  if(!pins.length) return '';
+  const {P,body,extra,H} = pinLayout(diag.package||'other', pins);
+  let s=`<svg viewBox="0 0 320 ${H}" style="width:100%;max-width:340px;display:block;margin:6px auto;background:#0b1015;border-radius:10px">`;
+  s+=`<g stroke="#c9d1d9" stroke-width="3">${extra}</g>`;
+  s+=`<rect x="${body.x}" y="${body.y}" width="${body.w}" height="${body.h}" rx="${body.rx}" fill="#2a3542" stroke="#9aa7b4" stroke-width="2"/>`;
+  P.forEach(p=>{
+    const isR=red&&p.n===red, isB=black&&p.n===black;
+    if(isR) s+=`<circle cx="${p.x}" cy="${p.y}" r="15" fill="none" stroke="#ff4d4d" stroke-width="4"/>`;
+    if(isB) s+=`<circle cx="${p.x}" cy="${p.y}" r="15" fill="none" stroke="#e6edf3" stroke-width="4" stroke-dasharray="4 3"/>`;
+    s+=`<circle cx="${p.x}" cy="${p.y}" r="10" fill="${isR?'#ff4d4d':isB?'#111':'#c9d1d9'}" stroke="${isB?'#e6edf3':'none'}" stroke-width="2"/>`;
+    s+=`<text x="${p.x}" y="${p.y+4}" font-size="11" font-weight="700" text-anchor="middle" fill="${isR||isB?'#fff':'#000'}" font-family="system-ui">${p.n}</text>`;
+    s+=`<text x="${p.lx}" y="${p.ly}" font-size="11" text-anchor="${p.anchor}" fill="#9aa7b4" font-family="system-ui">${esc(p.label.slice(0,14))}</text>`;
+  });
+  return s+'</svg>';
+}
+
+function scopeTrace(sc){
+  const W=300,Hh=200,cx=W/10,cy=Hh/8; const wave=sc.waveform||'none';
+  let g='';
+  for(let i=0;i<=10;i++) g+=`<line x1="${i*cx}" y1="0" x2="${i*cx}" y2="${Hh}" stroke="${i===5?'#2f4f3f':'#1d3328'}"/>`;
+  for(let j=0;j<=8;j++) g+=`<line x1="0" y1="${j*cy}" x2="${W}" y2="${j*cy}" stroke="${j===4?'#2f4f3f':'#1d3328'}"/>`;
+  const pts=[]; const N=300; const mid=110, A=55;
+  let seed=7; const rnd=()=>{ seed=(seed*9301+49297)%233280; return seed/233280; };
+  for(let k=0;k<=N;k++){
+    const x=k/N*W, t=k/N; let y=mid;
+    const ph=(c)=>(t*c)%1;
+    switch(wave){
+      case 'dc': y=60; break;
+      case 'dc_with_ripple': y=60+6*Math.sin(t*2*Math.PI*5); break;
+      case 'sine': y=mid-A*Math.sin(t*2*Math.PI*2.5); break;
+      case 'rectified_sine': y=mid+40-A*1.4*Math.abs(Math.sin(t*Math.PI*5)); break;
+      case 'square': y=ph(2.5)<0.5?mid-A:mid+A; break;
+      case 'clock': y=ph(6)<0.5?mid-A:mid+A; break;
+      case 'pwm': y=ph(3)<0.25?mid-A:mid+A; break;
+      case 'pulse': y=ph(3)<0.06?mid-A:mid+A; break;
+      case 'sawtooth': y=mid+A-2*A*ph(3); break;
+      case 'noise': y=mid+(rnd()-0.5)*30; break;
+      default: y=null;
+    }
+    if(y!==null) pts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+  }
+  const path = pts.length?`<polyline points="${pts.join(' ')}" fill="none" stroke="#ffd60a" stroke-width="2.2"/>`:'';
+  const lbl=[sc.volts_per_div&&`${sc.volts_per_div}/div`, sc.time_per_div&&`${sc.time_per_div}/div`].filter(Boolean).join('  ·  ');
+  return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:360px;display:block;margin:6px auto;background:#04140c;border-radius:8px;border:2px solid #2a3542">${g}${path}
+    <text x="6" y="14" font-size="11" fill="#7ee2a8" font-family="monospace">${esc(lbl)}</text>
+    <text x="6" y="${Hh-6}" font-size="11" fill="#ffd60a" font-family="monospace">${esc([sc.frequency,sc.amplitude].filter(Boolean).join('  '))}</text></svg>`;
+}
 
 /* ---------- scanning ---------- */
 async function startScan(file){
   if(!file) return;
   if(!cfg().proxy){ openSettings(); return; }
-  S.demo=false; S.details={};
+  S.demo=false; S.details={}; S.currentId=null; S.raw=null; S.title='';
   try{
     const url = URL.createObjectURL(file);
     const img = await loadImage(url);
@@ -397,10 +541,21 @@ async function startScan(file){
     const res = await callClaude({system:SCAN_SYSTEM, content, tool:SCAN_TOOL, maxTokens:8000});
     S.raw = res;
     S.scan = normalise(JSON.parse(JSON.stringify(res)));
+    S.imageData = toCanvas(S.fullCanvas, 2000).toDataURL('image/jpeg', .85);
+    S.thumb = toCanvas(S.fullCanvas, 160).toDataURL('image/jpeg', .7);
+    S.title = S.scan.device_guess || 'Circuit board';
     renderResult();
+    saveCurrent();
   }catch(e){ showError(e.message); }
 }
 
+/* Recursively turn JSON-looking strings back into objects/arrays */
+function deepParse(v){
+  v=parseMaybe(v);
+  if(Array.isArray(v)) return v.map(deepParse);
+  if(v && typeof v==='object'){ const o={}; for(const k in v) o[k]=deepParse(v[k]); return o; }
+  return v;
+}
 /* Models sometimes return nested arrays as JSON strings, or boxes in other shapes — accept them all */
 function parseMaybe(v){
   if(typeof v!=='string') return v;
@@ -457,7 +612,8 @@ const partColour = p => secColour(secById(p.section_id)?.type);
 function renderResult(){
   const r=S.scan;
   S.selected=null; S.filter=null; setZoom(1);
-  $('deviceGuess').textContent = r.device_guess || 'Circuit board';
+  $('deviceGuess').textContent = S.title || r.device_guess || 'Circuit board';
+  $('savedNote').textContent = S.demo ? 'Demo board (not saved)' : '';
   $('boardSummary').textContent = r.board_summary || '';
   const q=r.image_quality||{};
   $('qualityBox').innerHTML = (q.rating && q.rating!=='good') ? `<div class="warnbox small"><b>Photo quality: ${esc(q.rating)}.</b> ${esc(q.advice)}</div>` : '';
@@ -488,7 +644,7 @@ function renderOverlay(){
   });
   if(S.showParts) r.components.forEach(p=>{
     if(S.filter && p.section_id!==S.filter) return;
-    if(!p.box) return;
+    if(!p.box || S.selected!==p.id) return;
     const [x,y,w,hh]=p.box;
     h+=`<rect class="part-rect ${S.selected===p.id?'sel':''}" data-part="${esc(p.id)}" x="${x}" y="${y}" width="${w}" height="${hh}" rx="2" stroke="${partColour(p)}"/>`;
   });
@@ -573,7 +729,7 @@ function openPart(p){
       <p class="small muted">${S.demo?'Demo mode shows built-in guidance. With your proxy set, this re-reads the close-up for a fuller answer.':'Re-reads the close-up and looks up how to test and replace it.'}</p>`}</div>
     <div id="pGuide">${quickGuide(p)}</div>
     <div id="pLinks">${dsLinks(p.markings)}</div>`;
-  if(S.details[p.id]) renderDetail(S.details[p.id]);
+  if(S.details[p.id]) renderDetail(S.details[p.id],p);
   else $('moreBtn').onclick=()=>loadDetail(p, crop);
   $('sheet').classList.remove('hidden'); $('sheetBg').classList.remove('hidden'); $('sheet').scrollTop=0;
 }
@@ -591,20 +747,73 @@ async function loadDetail(p, crop){
     content.push({type:'text', text:`Component from a board identified as "${S.scan.device_guess}".
 Scan says: name "${p.name}", type "${p.type}", ref "${p.ref||''}", markings "${p.markings||'unreadable'}", value "${p.value||''}", section "${sec?.name||''}" (${sec?.type||''}), role: ${p.role}
 User's note about the device: ${$('note').value.trim()||'none'}`});
-    const d=await callClaude({system:DETAIL_SYSTEM, content, tool:DETAIL_TOOL, maxTokens:3000});
-    S.details[p.id]=d; renderDetail(d);
+    const d=await callClaude({system:DETAIL_SYSTEM, content, tool:DETAIL_TOOL, maxTokens:7000});
+    S.details[p.id]=d; renderDetail(d,p); saveCurrent();
   }catch(e){ $('pMore').innerHTML=`<div class="errbox small" style="margin-top:12px">${esc(e.message)}</div>`; }
 }
 
-function renderDetail(d){
-  $('pMore').innerHTML = `
-    <h4>Identification</h4><div>${esc(d.identification)}</div>
-    <h4>What it does</h4><div>${esc(d.function_in_circuit)}</div>
-    ${d.specs?.length?`<h4>Key specs</h4><div class="kv">${d.specs.map(s=>`<div>${esc(s.label)}</div><div>${esc(s.value)}</div>`).join('')}</div>`:''}
-    <h4>How to test</h4>${(d.how_to_test||[]).map(t=>`<div class="test"><b>${esc(t.method)}</b><ol>${(t.steps||[]).map(s=>`<li>${esc(s)}</li>`).join('')}</ol></div>`).join('')}
-    ${d.common_failures?.length?`<h4>Common failures</h4><ul>${d.common_failures.map(s=>`<li>${esc(s)}</li>`).join('')}</ul>`:''}
-    <h4>Replacement</h4><div>${esc(d.replacement?.notes)}</div>${d.replacement?.suggested_parts?.length?`<ul>${d.replacement.suggested_parts.map(s=>`<li>${esc(s)}</li>`).join('')}</ul>`:''}
-    ${d.safety?.length?`<h4>Safety</h4><ul>${d.safety.map(s=>`<li>${esc(s)}</li>`).join('')}</ul>`:''}`;
+function renderDetail(d, p){
+  d = deepParse(d) || {};
+  const sec = p ? secById(p.section_id) : null;
+  const mains = sec && sec.hazard==='danger';
+  const diag = d.diagram || {};
+  const tests = arr(d.meter_tests);
+  const sc = d.scope || {};
+  const L = (v)=>esc(v ?? '');
+  const probeTxt=(pin,note,colour)=>{
+    const pinObj=arr(diag.pins).find(x=>Number(x.n)===Number(pin));
+    return pin && pinObj ? `pin ${pin} (${L(pinObj.label)})` : (note? L(note) : (pin?`pin ${pin}`:'see notes'));
+  };
+  let h='';
+  h+=`<h4>Identification</h4><div>${L(d.identification)}</div>`;
+  h+=`<h4>What it does</h4><div>${L(d.function_in_circuit)}</div>`;
+  const specs=arr(d.specs).filter(s=>s&&s.label);
+  if(specs.length) h+=`<h4>Key specs</h4><div class="kv">${specs.map(s=>`<div>${L(s.label)}</div><div>${L(s.value)}</div>`).join('')}</div>`;
+  if(arr(diag.pins).length){
+    h+=`<h4>Pinout</h4>${pinDiagram(diag)}`;
+    if(diag.orientation_note) h+=`<div class="small muted">📍 ${L(diag.orientation_note)}</div>`;
+  }
+  if(tests.length){
+    h+=`<h4>Multimeter tests</h4>`;
+    if(mains) h+=`<div class="errbox small" style="margin-bottom:8px">Mains-side part: power off, unplugged, bulk capacitor discharged before any test.</div>`;
+    tests.forEach((t,i)=>{
+      const m=METER_LABEL[t.meter_mode]||METER_LABEL.other;
+      const powered=t.power_state==='power_on';
+      h+=`<div class="test">
+        <b>${i+1}. ${L(t.name)}</b>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px">
+          <span class="meter">${(t.meter_setting||'').includes(m[0])?'':esc(m[0])+' '}${L(t.meter_setting||m[1])}</span>
+          <span class="tag ${powered?'warnTag':''}">${powered?'⚡ Powered':'⏻ Power off'}</span>
+          <span class="tag">${t.in_circuit===false?'Out of circuit':'In circuit'}</span>
+        </div>
+        ${pinDiagram(diag, Number(t.red_pin)||0, Number(t.black_pin)||0)}
+        <div class="small"><span style="color:#ff6b6b;font-weight:700">● Red</span> → ${probeTxt(t.red_pin,t.red_note)}<br>
+        <span style="font-weight:700">○ Black</span> → ${probeTxt(t.black_pin,t.black_note)}</div>
+        <div class="small" style="margin-top:6px"><b style="display:inline;color:var(--ok)">Good:</b> ${L(t.expected)}</div>
+        ${t.fault_signs?`<div class="small"><b style="display:inline;color:var(--danger)">Faulty:</b> ${L(t.fault_signs)}</div>`:''}
+      </div>`;
+    });
+  }
+  h+=`<h4>Oscilloscope</h4>`;
+  if(sc.applicable){
+    if(mains) h+=`<div class="errbox small" style="margin-bottom:8px"><b>Primary side:</b> never connect the scope ground clip to mains-referenced circuitry unless the appliance is fed through an isolation transformer, or use a differential probe.</div>`;
+    h+=`<div class="test">${scopeTrace(sc)}
+      <div class="kv small" style="margin-top:8px">
+        ${[['Probe',sc.probe_attenuation],['Coupling',sc.coupling],['Volts/div',sc.volts_per_div],['Time/div',sc.time_per_div],['Trigger',sc.trigger],
+           ['Probe tip',sc.probe_pin?probeTxt(sc.probe_pin,sc.probe_point):sc.probe_point],['Ground clip',sc.ground_pin?probeTxt(sc.ground_pin,sc.ground_point):sc.ground_point],
+           ['Frequency',sc.frequency],['Amplitude',sc.amplitude]].filter(x=>x[1]).map(([k,v])=>`<div>${k}</div><div>${typeof v==='string'&&v.startsWith('pin ')?v:L(v)}</div>`).join('')}
+      </div>
+      ${sc.expected_trace?`<div class="small" style="margin-top:8px"><b style="display:inline;color:var(--ok)">Healthy trace:</b> ${L(sc.expected_trace)}</div>`:''}
+      ${sc.fault_trace?`<div class="small"><b style="display:inline;color:var(--danger)">Faulty trace:</b> ${L(sc.fault_trace)}</div>`:''}
+      ${sc.safety?`<div class="small muted" style="margin-top:6px">⚠ ${L(sc.safety)}</div>`:''}
+    </div>`;
+  } else {
+    h+=`<div class="small muted">${L(sc.reason||'A scope is not particularly useful for this part — use the meter tests above.')}</div>`;
+  }
+  const fails=arr(d.common_failures); if(fails.length) h+=`<h4>Common failures</h4><ul>${fails.map(s=>`<li>${L(s)}</li>`).join('')}</ul>`;
+  const rep=d.replacement||{}; if(rep.notes||arr(rep.suggested_parts).length) h+=`<h4>Replacement</h4><div>${L(rep.notes)}</div>${arr(rep.suggested_parts).length?`<ul>${rep.suggested_parts.map(s=>`<li>${L(s)}</li>`).join('')}</ul>`:''}`;
+  const saf=arr(d.safety); if(saf.length) h+=`<h4>Safety</h4><ul>${saf.map(s=>`<li>${L(s)}</li>`).join('')}</ul>`;
+  $('pMore').innerHTML=h;
   $('pGuide').innerHTML='';
   if(d.datasheet_query) $('pLinks').innerHTML=dsLinks(d.datasheet_query);
 }
@@ -718,11 +927,67 @@ function demoData(){
 }
 
 function runDemo(){
-  S.demo=true; S.details={}; S.raw=null;
+  S.demo=true; S.details={}; S.raw=null; S.title=''; S.currentId=null;
   const url=demoSVG();
   $('boardImg').src=url;
   loadImage(url).then(img=>{ S.fullCanvas=toCanvas(img,2000); }).catch(()=>{});
   S.scan=demoData(); renderResult();
+}
+
+/* ---------- saved scans (IndexedDB, on this device) ---------- */
+function idb(){
+  return new Promise((res,rej)=>{
+    const r=indexedDB.open('boardscan',1);
+    r.onupgradeneeded=()=>r.result.createObjectStore('scans',{keyPath:'id'});
+    r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
+  });
+}
+async function dbTx(mode, fn){
+  const db=await idb();
+  return new Promise((res,rej)=>{
+    const tx=db.transaction('scans',mode); const st=tx.objectStore('scans');
+    let out; const req=fn(st); if(req) req.onsuccess=()=>{ out=req.result; };
+    tx.oncomplete=()=>res(out); tx.onerror=()=>rej(tx.error);
+  });
+}
+const dbPut=rec=>dbTx('readwrite',st=>st.put(rec));
+const dbGet=id=>dbTx('readonly',st=>st.get(id));
+const dbAll=()=>dbTx('readonly',st=>st.getAll());
+const dbDel=id=>dbTx('readwrite',st=>st.delete(id));
+
+async function saveCurrent(){
+  if(S.demo || !S.raw || !S.imageData) return;
+  try{
+    if(!S.currentId){ S.currentId='scan-'+Date.now(); S.created=Date.now(); }
+    await dbPut({id:S.currentId, created:S.created, updated:Date.now(), title:S.title||S.scan?.device_guess||'Circuit board',
+      note:$('note').value.trim(), image:S.imageData, thumb:S.thumb, scan:S.raw, details:S.details});
+    $('savedNote').textContent='✓ Saved on this device';
+  }catch(e){ $('savedNote').textContent='Could not save this scan on this device.'; }
+}
+
+async function renderSaved(){
+  let list=[];
+  try{ list=(await dbAll())||[]; }catch(e){ $('savedCard').classList.add('hidden'); return; }
+  list.sort((a,b)=>(b.updated||b.created)-(a.updated||a.created));
+  $('savedCard').classList.toggle('hidden', !list.length);
+  $('savedList').innerHTML=list.map(r=>`<div class="saved" data-open="${esc(r.id)}">
+      <img src="${r.thumb||r.image}" alt="">
+      <div style="flex:1;min-width:0"><div class="t">${esc(r.title)}</div>
+        <div class="small muted">${new Date(r.created).toLocaleString('en-GB',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})} · ${(r.scan?.components?.length ?? '')} parts</div>
+        ${r.note?`<div class="small muted">${esc(r.note)}</div>`:''}</div>
+      <button class="iconbtn" data-rename="${esc(r.id)}" title="Rename">✎</button>
+      <button class="iconbtn" data-del="${esc(r.id)}" title="Delete">🗑</button></div>`).join('');
+}
+
+async function openSaved(id){
+  const r=await dbGet(id); if(!r) return;
+  S.demo=false; S.currentId=r.id; S.created=r.created; S.title=r.title; S.imageData=r.image; S.thumb=r.thumb;
+  S.details=r.details||{}; S.raw=r.scan; $('note').value=r.note||'';
+  $('boardImg').src=r.image;
+  const img=await loadImage(r.image); S.fullCanvas=toCanvas(img,3200);
+  S.scan=normalise(JSON.parse(JSON.stringify(r.scan)));
+  renderResult();
+  $('savedNote').textContent='✓ Saved on this device';
 }
 
 /* ---------- settings ---------- */
@@ -742,8 +1007,14 @@ $('fileBtn').onclick=()=>$('fileInput').click();
 $('cameraInput').onchange=e=>{ startScan(e.target.files[0]); e.target.value=''; };
 $('fileInput').onchange=e=>{ startScan(e.target.files[0]); e.target.value=''; };
 $('demoBtn').onclick=runDemo;
-$('newBtn').onclick=()=>{ closeSheet(); show('startView'); };
-$('errBack').onclick=()=>show('startView');
+$('newBtn').onclick=()=>{ closeSheet(); show('startView'); renderSaved(); };
+$('savedList').onclick=async e=>{
+  const del=e.target.closest('[data-del]'), ren=e.target.closest('[data-rename]'), op=e.target.closest('[data-open]');
+  if(del){ e.stopPropagation(); if(confirm('Delete this saved scan?')){ await dbDel(del.dataset.del); renderSaved(); } return; }
+  if(ren){ e.stopPropagation(); const r=await dbGet(ren.dataset.rename); const t=prompt('Name this scan', r?.title||''); if(t&&r){ r.title=t.trim(); await dbPut(r); renderSaved(); } return; }
+  if(op) openSaved(op.dataset.open);
+};
+$('errBack').onclick=()=>{ show('startView'); renderSaved(); };
 $('sheetClose').onclick=closeSheet; $('sheetBg').onclick=closeSheet;
 $('tgSections').onclick=e=>{ S.showSec=!S.showSec; e.target.classList.toggle('on',S.showSec); renderOverlay(); };
 $('tgParts').onclick=e=>{ S.showParts=!S.showParts; e.target.classList.toggle('on',S.showParts); renderOverlay(); };
@@ -760,6 +1031,7 @@ $('copyRaw').onclick=()=>{ try{ navigator.clipboard.writeText($('rawData').textC
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeSheet(); closeSettings(); } });
 
 refreshHint();
+renderSaved();
 })();
 </script>
 </body>
