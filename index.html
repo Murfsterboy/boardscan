@@ -238,8 +238,15 @@
       <p class="small muted" style="margin:8px 0 0">Pinch or double-tap to zoom, drag to move. Tap a numbered marker or a part in the list. Turn Parts off to see section names.</p>
     </div>
 
+    <div class="card" id="ffCard">
+      <h2>🧭 Guided fault-finding</h2>
+      <p class="small muted" style="margin-top:0">Step-by-step tests to track down the fault. Start with the whole board, or pick a section.</p>
+      <div class="legend" id="ffChips"></div>
+    </div>
+
     <div class="card">
       <h2>Board sections</h2>
+      <div id="secNote"></div>
       <p class="small muted" style="margin-top:0">Tap a section to show only its parts.</p>
       <div class="legend" id="legend"></div>
       <ul class="sec-desc" id="secDesc"></ul>
@@ -839,13 +846,13 @@ async function runScan(img, url){
       mergeInto(S.acc, list);
       if(S.raw && token===S.scanToken){ S.raw.components=[...S.acc]; updateScan(); }
     };
-    const ovP = callClaude({system:SCAN_SYSTEM+OVERVIEW_FOCUS, content, tool:OVERVIEW_TOOL, maxTokens:5000}).then(ov=>{
+    const ovP = getOverview(content).then(ov=>{
       if(token!==S.scanToken) return ov;
       S.raw={...ov, components:[...S.acc], detailed};
       S.title=ov.device_guess||'Circuit board';
       S.scan=normalise(JSON.parse(JSON.stringify(S.raw)));
       if(S.partsLoading && !S.acc.length) S.partsStatus = detailed ? 'Finding parts: 0 of 4 quarters done' : 'Finding parts';
-      renderResult();
+      try{ renderResult(); }catch(e){ console.error(e); toast('Display problem: '+e.message, 6000); }
       return ov;
     });
     const partsP = detailed ? scanTiles(note, onParts, token)
@@ -856,7 +863,8 @@ async function runScan(img, url){
     S.partsLoading=false;
     if(ov.status==='rejected'){
       if(!S.acc.length) throw ov.reason;
-      S.raw={device_guess:'Circuit board', board_summary:'The board overview could not be loaded this time, but the parts were found.', image_quality:{}, sections:[], safety_notes:[], components:[...S.acc], detailed};
+      S.raw={device_guess:'Circuit board', board_summary:'The board overview could not be loaded this time, but the parts were found.', image_quality:{}, sections:[], safety_notes:[], components:[...S.acc], detailed,
+        _ovError: ov.reason?.message || String(ov.reason||'unknown error'), _ovDebug: ov.reason?.debug || null};
       S.title='Circuit board';
       S.scan=normalise(JSON.parse(JSON.stringify(S.raw)));
       renderResult();
@@ -879,6 +887,36 @@ function updateScan(){
   if($('resultView').classList.contains('hidden')) return;
   refresh(); renderPlaceNote();
   if(!$('sheet').classList.contains('hidden')) updateNav();
+}
+
+async function getOverview(content){
+  try{
+    return await callClaude({system:SCAN_SYSTEM+OVERVIEW_FOCUS, content, tool:OVERVIEW_TOOL, maxTokens:8000});
+  }catch(e){
+    if(!e.truncated) throw e;
+    return await callClaude({system:SCAN_SYSTEM+OVERVIEW_FOCUS+'\nKeep it short: at most 10 sections, one-sentence descriptions, at most 5 safety notes.', content, tool:OVERVIEW_TOOL, maxTokens:8000});
+  }
+}
+
+/* Re-run just the overview (sections) for the current scan */
+async function retrySections(){
+  if(!S.raw || S.demo) return;
+  if(!cfg().proxy){ openSettings(); return; }
+  const btn=$('retrySecBtn'); if(btn){ btn.disabled=true; btn.textContent='Finding sections…'; }
+  try{
+    const img=await loadImage(S.imageData);
+    const note=$('note').value.trim();
+    const content=[{type:'image', source:{type:'base64', media_type:'image/jpeg', data:b64(toCanvas(img,1568))}},
+      {type:'text', text: note ? `The user says this board is from: ${note}` : 'No description of the device was given.'}];
+    const ov=await getOverview(content);
+    const keep={components:S.raw.components, detailed:S.raw.detailed};
+    S.raw={...ov, ...keep};
+    S.title=ov.device_guess||S.title||'Circuit board';
+    S.scan=normalise(JSON.parse(JSON.stringify(S.raw)));
+    renderResult(); saveCurrent(); toast('Sections found');
+  }catch(e){
+    S.raw._ovError=e.message; S.raw._ovDebug=e.debug||null; renderSecCard();
+  }
 }
 
 async function getParts(content){
@@ -997,7 +1035,24 @@ function renderLegend(){
   $('legend').innerHTML = secs.map(s=>`<button class="chip ${S.filter===s.id?'on':''}" data-sec="${esc(s.id)}"><span class="dot" style="background:${secColour(s.type)}"></span>${esc(s.name)}${s.hazard!=='none'?`<span class="haz ${s.hazard}">${s.hazard==='danger'?'DANGER':'CAUTION'}</span>`:''}</button>`).join('')
     + (S.filter?`<button class="chip" data-sec="">Show all</button>`:'');
   $('secDesc').innerHTML = secs.map(s=>`<li><span class="dot" style="display:inline-block;background:${secColour(s.type)};margin-right:6px"></span><b>${esc(s.name)}</b> <span class="small muted">· ${esc((SEC[s.type]||SEC.other).label)}</span><div class="small">${esc(s.description)}</div>
-    <button class="btn ffbtn" data-ff="${esc(s.id)}">🧭 Fault-find${S.faults[s.id]?.proc?(S.faults[s.id].ended?' · finished':' · in progress'):''}</button></li>`).join('');
+    <button class="btn ffbtn" data-ff="${esc(s.id)}">🧭 Fault-find${ffStatus(s.id)}</button></li>`).join('');
+  renderFFCard(); renderSecCard();
+}
+const ffStatus = id => S.faults[id]?.proc ? (S.faults[id].ended ? ' · finished' : ' · in progress') : '';
+function renderFFCard(){
+  const secs=S.scan.sections;
+  $('ffChips').innerHTML = `<button class="chip" data-ff="_board"><span class="dot" style="background:var(--accent)"></span><b>Whole board</b>${ffStatus('_board')}</button>`
+    + secs.map(s=>`<button class="chip" data-ff="${esc(s.id)}"><span class="dot" style="background:${secColour(s.type)}"></span>${esc(s.name)}${ffStatus(s.id)}</button>`).join('');
+}
+function renderSecCard(){
+  const r=S.raw||{}, box=$('secNote');
+  if(S.scan.sections.length || S.demo){ box.innerHTML=''; return; }
+  const dbg=r._ovDebug?JSON.stringify(r._ovDebug,null,2):'';
+  box.innerHTML=`<div class="${r._ovError?'errbox':'warnbox'} small" style="margin-bottom:8px">${r._ovError?`<b>Sections couldn't be loaded.</b> ${esc(r._ovError)}`:'No sections were found for this photo.'}
+    <button class="btn block" style="margin-top:8px" id="retrySecBtn">↻ Retry sections</button>
+    ${dbg?`<details style="margin-top:8px"><summary class="muted">Debug info (send this to get it fixed)</summary><button class="btn" style="margin:8px 0" id="copySecDbg">Copy debug info</button><pre style="white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;font-size:11px">${esc(dbg)}</pre></details>`:''}</div>`;
+  $('retrySecBtn').onclick=retrySections;
+  if(dbg) $('copySecDbg').onclick=()=>{ try{ navigator.clipboard.writeText(dbg); $('copySecDbg').textContent='Copied'; }catch(e){} };
 }
 
 function renderOverlay(){
@@ -1267,7 +1322,15 @@ const ASK_TOOL = {name:'reading_advice', description:'Advice about a reading dur
     recommendation:{type:'string', enum:['pass','fail','repeat','stop'], description:'pass = treat as good and continue; fail = treat as bad; repeat = measure again differently; stop = unsafe or needs an expert.'} }}};
 const ASK_SYSTEM = `You are an experienced electronics repair technician helping a UK repair café volunteer (230 V mains) during guided fault-finding on a circuit board. Give short, practical advice about their reading, keeping mains safety in mind. British spelling.`;
 
-const ffSec = () => S.ff && S.scan && secById(S.ff.secId);
+function ffSecById(id){
+  if(id!=='_board') return secById(id);
+  const secs=S.scan.sections;
+  const hz=(!secs.length||secs.some(s=>s.hazard==='danger'))?'danger':secs.some(s=>s.hazard==='caution')?'caution':'none';
+  return {id:'_board', name:'Whole board', type:'other', hazard:hz, box:[0,0,1000,1000],
+    description:'The whole board: start with the power supply and work towards the load and logic.'};
+}
+const ffParts = sec => sec.id==='_board' ? S.scan.components : S.scan.components.filter(p=>p.section_id===sec.id);
+const ffSec = () => S.ff && S.scan && ffSecById(S.ff.secId);
 const ffStep = id => S.ff?.proc?.steps.find(s=>s.id===id);
 const ffConc = id => S.ff?.proc?.conclusions.find(c=>c.id===id);
 const partById = id => S.scan?.components.find(c=>c.id===id);
@@ -1283,11 +1346,11 @@ function normProc(p){
 }
 
 function openFF(secId){
-  const sec=secById(secId); if(!sec) return;
+  const sec=ffSecById(secId); if(!sec) return;
   closeSheet();
   S.ffOpenSec=secId;
   $('ffTitle').textContent='🧭 Fault-find: '+sec.name;
-  $('ffSub').innerHTML=`<span style="color:${secColour(sec.type)}">${esc((SEC[sec.type]||SEC.other).label)}</span>${sec.hazard!=='none'?` <span class="haz ${sec.hazard}">${sec.hazard==='danger'?'DANGER':'CAUTION'}</span>`:''}`;
+  $('ffSub').innerHTML=`<span style="color:${secColour(sec.type)}">${esc(sec.id==='_board'?'All sections':(SEC[sec.type]||SEC.other).label)}</span>${sec.hazard!=='none'?` <span class="haz ${sec.hazard}">${sec.hazard==='danger'?'DANGER':'CAUTION'}</span>`:''}`;
   const sess=S.faults[secId];
   if(sess?.proc){ S.ff=sess; renderFFCurrent(); } else renderFFStart(sec);
   $('ffSheet').classList.remove('hidden'); $('ffBg').classList.remove('hidden'); $('ffSheet').scrollTop=0;
@@ -1307,7 +1370,7 @@ function updateResume(){
 }
 
 function renderFFStart(sec){
-  const parts=S.scan.components.filter(p=>p.section_id===sec.id);
+  const parts=ffParts(sec);
   const risky=sec.hazard!=='none';
   let h=`<p class="small muted">Pick the symptom. BoardScan then writes a step-by-step test sequence for this section, using the ${parts.length} part${parts.length===1?'':'s'} it found here. You tap good or bad after each test and it picks the next one.</p>
   <h4>What's wrong?</h4><div class="symp" id="ffSymp">${SYMPTOMS.map(s=>`<button class="chip" data-s="${esc(s)}">${esc(s)}</button>`).join('')}</div>
@@ -1331,14 +1394,14 @@ async function startFF(sec, symptom, note){
   const sess={secId:sec.id, symptom, note, proc:null, trail:[], current:null, ended:null, ack:{}, created:Date.now()};
   if(S.demo){
     const p=demoFault(sec);
-    if(!p){ $('ffBody').innerHTML=`<div class="warnbox small" style="margin-top:10px">The demo board has a built-in procedure for the <b>Mains input</b> and <b>Rectifier &amp; HV switching</b> sections. Scan a real board to fault-find the others.</div>`; return; }
+    if(!p){ $('ffBody').innerHTML=`<div class="warnbox small" style="margin-top:10px">The demo board has a built-in procedure for <b>Whole board</b>, <b>Mains input</b> and <b>Rectifier &amp; HV switching</b>. Scan a real board to fault-find the others.</div>`; return; }
     sess.proc=normProc(p);
   } else {
     if(!cfg().proxy){ openSettings(); return; }
     $('ffBody').innerHTML='<div class="spinner"></div><p class="small muted" style="text-align:center">Writing the test sequence…<br>This usually takes 20–60 seconds. Keep the app open.</p>';
     keepAwake(true);
     try{
-      const parts=S.scan.components.filter(p=>p.section_id===sec.id);
+      const parts=ffParts(sec);
       const others=S.scan.sections.filter(s=>s.id!==sec.id).map(s=>`${s.name} (${s.type})`).join('; ');
       const crop=cropCanvas(sec.box,1400);
       const content=[];
@@ -1556,7 +1619,7 @@ function ffBodyClick(e){
 
 /* Built-in procedure for the demo board's mains / HV sections */
 function demoFault(sec){
-  if(!['mains','psu_primary'].includes(sec.type)) return null;
+  if(sec.id!=='_board' && !['mains','psu_primary'].includes(sec.type)) return null;
   const st=(id,title,parts,mode,setting,red,black,instruction,expected,o)=>Object.assign({id,title,instruction,part_ids:parts,power_state:'power_off',live_mains:false,meter_mode:mode,meter_setting:setting,red_probe:red,black_probe:black,expected,input:'pass_fail',confidence:'high'},o);
   return {
     summary:'Works from the mains inlet towards the switching IC, doing every powered-off check first.',
@@ -1856,6 +1919,7 @@ $('copyDebug').onclick=()=>{ try{ navigator.clipboard.writeText($('errDebug').te
 $('copyRaw').onclick=()=>{ try{ navigator.clipboard.writeText($('rawData').textContent); $('copyRaw').textContent='Copied'; }catch(e){} };
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeSheet(); closeSettings(); closeFF(); } });
 $('secDesc').onclick=e=>{ const b=e.target.closest('[data-ff]'); if(b) openFF(b.dataset.ff); };
+$('ffChips').onclick=e=>{ const b=e.target.closest('[data-ff]'); if(b) openFF(b.dataset.ff); };
 $('ffClose').onclick=closeFF; $('ffBg').onclick=closeFF;
 $('ffResume').onclick=()=>{ if(S.ff) openFF(S.ff.secId); };
 $('ffBody').addEventListener('click', ffBodyClick);
