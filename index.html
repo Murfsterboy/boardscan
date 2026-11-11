@@ -114,6 +114,26 @@
   .qcheck li{margin:6px 0}
   .pin{transition:transform .15s}
   .part{transition:background .15s}
+  /* guided fault-finding */
+  .ffbtn{margin-top:8px;padding:7px 12px;font-size:13px}
+  .symp{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
+  .symp .chip.on{background:#12324a;border-color:var(--accent)}
+  .ffprog{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:8px}
+  .ffchoice{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+  .ffchoice .btn{padding:14px 10px;min-height:54px}
+  .btn.pass{background:#123a28;border-color:var(--ok)}
+  .btn.fail{background:#3a1616;border-color:var(--danger)}
+  .btn.suggest{box-shadow:0 0 0 3px #fff}
+  .btn:disabled{opacity:.4}
+  .verdict{border-radius:10px;padding:12px;margin:10px 0}
+  .verdict.fault_found{background:#3a2a12;border:1px solid var(--warn)}
+  .verdict.section_ok{background:#123a28;border:1px solid var(--ok)}
+  .verdict.unresolved{background:var(--panel2);border:1px solid var(--line)}
+  .trail li{margin:4px 0}
+  .ackrow{display:flex;gap:10px;align-items:flex-start;margin:10px 0 0;font-size:14px;color:var(--text)}
+  .ackrow input{width:20px;height:20px;flex:none;margin-top:1px;accent-color:var(--accent)}
+  #ffResume{position:fixed;right:14px;bottom:20px;z-index:30;border-radius:999px;box-shadow:0 6px 20px rgba(0,0,0,.45)}
+  .linkbtn{background:none;border:none;color:var(--muted);text-decoration:underline;font-size:13px;padding:8px 0;display:block;margin:6px auto 0}
 </style>
 </head>
 <body>
@@ -259,6 +279,18 @@
   <div id="pBody"></div>
 </div>
 
+<!-- FAULT-FINDING SHEET -->
+<div class="sheet-bg hidden" id="ffBg"></div>
+<div class="sheet hidden" id="ffSheet" role="dialog" aria-modal="true">
+  <div class="grab"></div>
+  <div style="display:flex;align-items:flex-start;gap:10px">
+    <div style="flex:1;min-width:0"><h3 id="ffTitle"></h3><div class="small muted" id="ffSub"></div></div>
+    <button class="iconbtn" id="ffClose">✕</button>
+  </div>
+  <div id="ffBody"></div>
+</div>
+<button class="btn primary hidden" id="ffResume">🧭 Back to fault-finding</button>
+
 <!-- SETTINGS SHEET -->
 <div class="sheet-bg hidden" id="setBg"></div>
 <div class="sheet hidden" id="setSheet">
@@ -301,7 +333,7 @@ const SEC = {
 const secColour = t => (SEC[t]||SEC.other).c;
 
 /* ---------- state ---------- */
-const S = {scan:null, fullCanvas:null, selected:null, filter:null, showSec:true, showParts:true, zoom:1, demo:false, details:{}};
+const S = {scan:null, fullCanvas:null, selected:null, filter:null, showSec:true, showParts:true, zoom:1, demo:false, details:{}, faults:{}, ff:null};
 const store = {
   get(k,d){ try{ const v=localStorage.getItem('boardscan.'+k); return v===null?d:v; }catch(e){ return d; } },
   set(k,v){ try{ localStorage.setItem('boardscan.'+k,v); }catch(e){} }
@@ -316,6 +348,7 @@ function show(view){
   ['startView','checkView','scanView','errorView','resultView'].forEach(v => $(v).classList.toggle('hidden', v!==view));
   $('newBtn').classList.toggle('hidden', view==='startView');
   window.scrollTo(0,0);
+  updateResume();
 }
 function refreshHint(){ $('noProxyHint').classList.toggle('hidden', !!cfg().proxy); }
 
@@ -783,7 +816,7 @@ async function startScan(file){
 }
 
 async function runScan(img, url){
-  S.demo=false; S.details={}; S.currentId=null; S.raw=null; S.scan=null; S.title='';
+  S.demo=false; S.details={}; S.faults={}; S.ff=null; closeFF(); S.currentId=null; S.raw=null; S.scan=null; S.title='';
   const token = S.scanToken = Date.now();
   S.acc=[]; S.nextId=0; S.partsLoading=true; S.scanning=true;
   keepAwake(true);
@@ -963,7 +996,8 @@ function renderLegend(){
   const secs=S.scan.sections;
   $('legend').innerHTML = secs.map(s=>`<button class="chip ${S.filter===s.id?'on':''}" data-sec="${esc(s.id)}"><span class="dot" style="background:${secColour(s.type)}"></span>${esc(s.name)}${s.hazard!=='none'?`<span class="haz ${s.hazard}">${s.hazard==='danger'?'DANGER':'CAUTION'}</span>`:''}</button>`).join('')
     + (S.filter?`<button class="chip" data-sec="">Show all</button>`:'');
-  $('secDesc').innerHTML = secs.map(s=>`<li><span class="dot" style="display:inline-block;background:${secColour(s.type)};margin-right:6px"></span><b>${esc(s.name)}</b> <span class="small muted">· ${esc((SEC[s.type]||SEC.other).label)}</span><div class="small">${esc(s.description)}</div></li>`).join('');
+  $('secDesc').innerHTML = secs.map(s=>`<li><span class="dot" style="display:inline-block;background:${secColour(s.type)};margin-right:6px"></span><b>${esc(s.name)}</b> <span class="small muted">· ${esc((SEC[s.type]||SEC.other).label)}</span><div class="small">${esc(s.description)}</div>
+    <button class="btn ffbtn" data-ff="${esc(s.id)}">🧭 Fault-find${S.faults[s.id]?.proc?(S.faults[s.id].ended?' · finished':' · in progress'):''}</button></li>`).join('');
 }
 
 function renderOverlay(){
@@ -1180,6 +1214,381 @@ function renderDetail(d, p){
   if(d.datasheet_query) $('pLinks').innerHTML=dsLinks(d.datasheet_query);
 }
 
+/* ---------- guided fault-finding ---------- */
+const SYMPTOMS = ['Completely dead','Fuse blows','Trips the RCD','Cuts out / intermittent','Resets or flickers','Output wrong or missing','Buzzing or ticking','Burning smell / visible damage'];
+METER_LABEL.visual = ['👁','Visual check'];
+const FF_STEP = {type:'object', required:['id','title','instruction','power_state','live_mains','meter_mode','expected','input','next_if_pass','next_if_fail','confidence'], properties:{
+  id:{type:'string'},
+  title:{type:'string', description:'Short imperative title, e.g. "Check fuse F1".'},
+  instruction:{type:'string', description:'What to do, in 1–3 plain sentences.'},
+  part_ids:{type:'array', items:{type:'string'}, description:'ids (e.g. "p7") of the parts this step tests, from the list given.'},
+  power_state:{type:'string', enum:['power_off','power_on']},
+  live_mains:{type:'boolean', description:'True if the appliance is plugged in and mains-potential circuitry is exposed during this step.'},
+  meter_mode:{type:'string', enum:[...METER_MODES,'visual']},
+  meter_setting:{type:'string', description:'Exact dial setting, e.g. "Diode test", "Ω 200 range", "600 V DC". Empty for visual checks.'},
+  red_probe:{type:'string', description:'Where the red probe goes, by part ref and leg/pin, e.g. "C1 + leg". Empty for visual checks.'},
+  black_probe:{type:'string'},
+  expected:{type:'string', description:'What a good result looks like.'},
+  input:{type:'string', enum:['pass_fail','reading'], description:'reading = the user types a number; pass_fail = the user taps good or bad.'},
+  unit:{type:'string', description:'Unit for a reading, e.g. "V", "Ω", "kΩ", "MΩ", "µF".'},
+  good_min:{type:'number', description:'Lowest good reading, in the unit. Omit if there is no lower limit.'},
+  good_max:{type:'number', description:'Highest good reading, in the unit. Omit if there is no upper limit.'},
+  pass_label:{type:'string', description:'Short button text for the good outcome, e.g. "Under 1 Ω".'},
+  fail_label:{type:'string', description:'Short button text for the bad outcome, e.g. "Open (OL)".'},
+  next_if_pass:{type:'string', description:'id of the next step or conclusion if the result is good.'},
+  next_if_fail:{type:'string', description:'id of the next step or conclusion if the result is bad.'},
+  confidence:{type:'string', enum:['high','medium','low'], description:'How sure you are of the expected result without a schematic.'} }};
+const FF_CONC = {type:'object', required:['id','title','verdict','explanation','actions'], properties:{
+  id:{type:'string'}, title:{type:'string'},
+  verdict:{type:'string', enum:['fault_found','section_ok','unresolved']},
+  explanation:{type:'string', description:'1–3 sentences.'},
+  actions:{type:'array', items:{type:'string'}, description:'What to do next, in order.'},
+  part_ids:{type:'array', items:{type:'string'}} }};
+const FAULT_TOOL = {name:'fault_procedure', description:'A branching step-by-step fault-finding procedure for one board section.',
+  input_schema:{type:'object', required:['summary','steps','conclusions'], properties:{
+    summary:{type:'string', description:'1–2 sentences on the approach.'},
+    assumptions:{type:'string', description:'What you have had to assume without a schematic.'},
+    steps:{type:'array', items:FF_STEP, description:'The first step is where the procedure starts.'},
+    conclusions:{type:'array', items:FF_CONC} }}};
+const FAULT_SYSTEM = `You are an experienced electronics repair technician writing a guided fault-finding procedure for a UK repair café volunteer (230 V 50 Hz mains) who has a multimeter. You are given a photo crop of one section of a circuit board, the parts found in it, and the symptom.
+Write a branching procedure. Each step is one test with two outcomes (good / bad), and each outcome leads to another step id or a conclusion id. Rule faults out in a sensible order, starting with what is most likely for this symptom.
+Rules:
+- Safety order: visual inspection first; then confirm any large capacitors are discharged (under 5 V) if the section has them; then powered-off tests (continuity, resistance, diode, capacitance/ESR); powered tests only at the end. Mark every test that needs the appliance plugged in as power_state "power_on", and set live_mains true if mains-potential circuitry is exposed. Avoid live mains tests unless genuinely needed.
+- Refer to parts by their ref (or name) in the text and list their ids in part_ids. Only use ids from the list given.
+- Give exact meter settings and probe positions by part and leg/pin (e.g. "BD1 ~ pin", "C1 − leg").
+- Expected values are your best estimate without a schematic: give realistic ranges and set confidence honestly. For a reading step give good_min and/or good_max in the stated unit.
+- Say where in-circuit readings can mislead (parallel paths) and when to lift a leg.
+- 6–14 steps. Every next_if_pass and next_if_fail must be an id that exists. No loops, except to repeat a safety check.
+- Conclusions say what is probably faulty and what to do next (replace like-for-like, check the next section, use a lamp limiter for the first power-up after a repair, and so on).
+Plain English, British spelling.`;
+const ASK_TOOL = {name:'reading_advice', description:'Advice about a reading during guided fault-finding.',
+  input_schema:{type:'object', required:['advice','recommendation'], properties:{
+    advice:{type:'string', description:'2–4 short sentences: what the reading probably means and what to check.'},
+    recommendation:{type:'string', enum:['pass','fail','repeat','stop'], description:'pass = treat as good and continue; fail = treat as bad; repeat = measure again differently; stop = unsafe or needs an expert.'} }}};
+const ASK_SYSTEM = `You are an experienced electronics repair technician helping a UK repair café volunteer (230 V mains) during guided fault-finding on a circuit board. Give short, practical advice about their reading, keeping mains safety in mind. British spelling.`;
+
+const ffSec = () => S.ff && S.scan && secById(S.ff.secId);
+const ffStep = id => S.ff?.proc?.steps.find(s=>s.id===id);
+const ffConc = id => S.ff?.proc?.conclusions.find(c=>c.id===id);
+const partById = id => S.scan?.components.find(c=>c.id===id);
+
+function normProc(p){
+  p=deepParse(p)||{};
+  const ids=a=>asArray(a).map(x=>String(x));
+  const steps=asArray(p.steps).map(parseMaybe).filter(x=>x&&typeof x==='object');
+  const concs=asArray(p.conclusions).map(parseMaybe).filter(x=>x&&typeof x==='object');
+  steps.forEach((s,i)=>{ s.id=String(s.id||'t'+(i+1)); s.part_ids=ids(s.part_ids); s.title=s.title||`Step ${i+1}`; });
+  concs.forEach((c,i)=>{ c.id=String(c.id||'c'+(i+1)); c.part_ids=ids(c.part_ids); c.actions=asArray(c.actions).filter(x=>typeof x==='string'); if(!['fault_found','section_ok','unresolved'].includes(c.verdict)) c.verdict='unresolved'; });
+  return {summary:p.summary||'', assumptions:p.assumptions||'', steps, conclusions:concs};
+}
+
+function openFF(secId){
+  const sec=secById(secId); if(!sec) return;
+  closeSheet();
+  S.ffOpenSec=secId;
+  $('ffTitle').textContent='🧭 Fault-find: '+sec.name;
+  $('ffSub').innerHTML=`<span style="color:${secColour(sec.type)}">${esc((SEC[sec.type]||SEC.other).label)}</span>${sec.hazard!=='none'?` <span class="haz ${sec.hazard}">${sec.hazard==='danger'?'DANGER':'CAUTION'}</span>`:''}`;
+  const sess=S.faults[secId];
+  if(sess?.proc){ S.ff=sess; renderFFCurrent(); } else renderFFStart(sec);
+  $('ffSheet').classList.remove('hidden'); $('ffBg').classList.remove('hidden'); $('ffSheet').scrollTop=0;
+  updateResume();
+}
+function closeFF(){
+  const sh=$('ffSheet'); if(!sh) return;
+  const wasOpen=!sh.classList.contains('hidden');
+  sh.classList.add('hidden'); $('ffBg').classList.add('hidden'); S.ffOpenSec=null;
+  if(wasOpen && S.scan) renderLegend();
+  updateResume();
+}
+function updateResume(){
+  const b=$('ffResume'); if(!b) return;
+  const on=!!(S.ff?.proc && !S.ff.ended) && $('ffSheet').classList.contains('hidden') && !$('resultView').classList.contains('hidden');
+  b.classList.toggle('hidden', !on);
+}
+
+function renderFFStart(sec){
+  const parts=S.scan.components.filter(p=>p.section_id===sec.id);
+  const risky=sec.hazard!=='none';
+  let h=`<p class="small muted">Pick the symptom. BoardScan then writes a step-by-step test sequence for this section, using the ${parts.length} part${parts.length===1?'':'s'} it found here. You tap good or bad after each test and it picks the next one.</p>
+  <h4>What's wrong?</h4><div class="symp" id="ffSymp">${SYMPTOMS.map(s=>`<button class="chip" data-s="${esc(s)}">${esc(s)}</button>`).join('')}</div>
+  <label for="ffNote">Anything else? (optional)</label>
+  <input type="text" id="ffNote" placeholder="e.g. clicks once then nothing, fuse was blackened">`;
+  if(risky) h+=`<div class="errbox small" style="margin-top:14px"><b>${sec.hazard==='danger'?'This section is at mains voltage.':'This section is next to the mains side.'}</b> Before you start:
+    <label class="ackrow"><input type="checkbox" class="ffAck"> The appliance is unplugged at the wall.</label>
+    <label class="ackrow"><input type="checkbox" class="ffAck"> I'll check the large capacitor reads under 5 V before touching the board.</label></div>`;
+  if(!parts.length) h+=`<div class="warnbox small">No parts were placed in this section, so the steps will be more general.</div>`;
+  h+=`<button class="btn primary block" style="margin-top:14px" id="ffGo" disabled>Start fault-finding</button>
+  <p class="small muted">${S.demo?'The demo board uses a built-in procedure (no AI cost).':'Uses one AI request, about the same cost as a part\'s Full details.'}</p>`;
+  $('ffBody').innerHTML=h;
+  let symptom='';
+  const upd=()=>{ $('ffGo').disabled = (!symptom && !$('ffNote').value.trim()) || [...$('ffBody').querySelectorAll('.ffAck')].some(c=>!c.checked); };
+  $('ffSymp').onclick=e=>{ const b=e.target.closest('[data-s]'); if(!b) return; symptom = symptom===b.dataset.s?'':b.dataset.s; $('ffSymp').querySelectorAll('.chip').forEach(c=>c.classList.toggle('on', c.dataset.s===symptom)); upd(); };
+  $('ffNote').oninput=upd; $('ffBody').querySelectorAll('.ffAck').forEach(c=>c.onchange=upd);
+  $('ffGo').onclick=()=>startFF(sec, symptom, $('ffNote').value.trim());
+}
+
+async function startFF(sec, symptom, note){
+  const sess={secId:sec.id, symptom, note, proc:null, trail:[], current:null, ended:null, ack:{}, created:Date.now()};
+  if(S.demo){
+    const p=demoFault(sec);
+    if(!p){ $('ffBody').innerHTML=`<div class="warnbox small" style="margin-top:10px">The demo board has a built-in procedure for the <b>Mains input</b> and <b>Rectifier &amp; HV switching</b> sections. Scan a real board to fault-find the others.</div>`; return; }
+    sess.proc=normProc(p);
+  } else {
+    if(!cfg().proxy){ openSettings(); return; }
+    $('ffBody').innerHTML='<div class="spinner"></div><p class="small muted" style="text-align:center">Writing the test sequence…<br>This usually takes 20–60 seconds. Keep the app open.</p>';
+    keepAwake(true);
+    try{
+      const parts=S.scan.components.filter(p=>p.section_id===sec.id);
+      const others=S.scan.sections.filter(s=>s.id!==sec.id).map(s=>`${s.name} (${s.type})`).join('; ');
+      const crop=cropCanvas(sec.box,1400);
+      const content=[];
+      if(crop) content.push({type:'image', source:{type:'base64', media_type:'image/jpeg', data:b64(crop,.88)}});
+      content.push({type:'text', text:`Board: ${S.scan.device_guess||'circuit board'}. User's note about the device: ${$('note').value.trim()||'none'}.
+Board summary: ${S.scan.board_summary||''}
+Section to fault-find: "${sec.name}" (type ${sec.type}, hazard ${sec.hazard}): ${sec.description||''}
+Other sections on the board: ${others||'none'}
+Parts in this section:
+${parts.map(p=>`- id ${p.id}: ${p.ref||'(no ref)'} ${p.name}${p.markings?`, marked "${p.markings}"`:''}${p.value?`, ${p.value}`:''} — ${p.role||''}`).join('\n')||'(none found)'}
+Symptom: ${symptom||'not given'}${note?`. Details: ${note}`:''}`});
+      const res=await callClaude({system:FAULT_SYSTEM, content, tool:FAULT_TOOL, maxTokens:8000});
+      sess.proc=normProc(res);
+      if(!sess.proc.steps.length) throw new Error('No test steps came back. Please try again.');
+    }catch(e){
+      if(S.ffOpenSec!==sec.id) return;
+      $('ffBody').innerHTML=`<div class="errbox small" style="margin-top:10px">${esc(e.message)}</div><button class="btn block" style="margin-top:10px" id="ffRetry">Back</button>`;
+      $('ffRetry').onclick=()=>renderFFStart(sec); return;
+    }finally{ keepAwake(false); }
+  }
+  sess.current=sess.proc.steps[0].id;
+  S.faults[sec.id]=sess; saveCurrent();
+  if(S.ffOpenSec===sec.id){ S.ff=sess; renderFFCurrent(); }
+  else toast('Fault-finding steps for '+sec.name+' are ready');
+}
+
+function renderFFCurrent(){
+  const f=S.ff; if(!f) return;
+  if(f.ended){ renderFFEnd(); return; }
+  const st=ffStep(f.current);
+  if(!st){ f.ended=f.current||'_none'; renderFFEnd(); return; }
+  const sec=ffSec();
+  const live = st.live_mains===true || (st.power_state==='power_on' && sec && sec.hazard!=='none');
+  if(live && !f.ack[st.id]) renderFFLock(st); else renderFFStep(st);
+  $('ffSheet').scrollTop=0;
+}
+
+const fmtNum = v => isFinite(v) ? String(+(+v).toPrecision(4)) : '';
+function parseReading(s){
+  s=String(s||'').trim(); if(!s) return null;
+  if(/o\.?l|open|inf|∞/i.test(s) && !/\d/.test(s)) return Infinity;
+  const m=s.replace(',','.').match(/-?\d*\.?\d+/); return m?parseFloat(m[0]):null;
+}
+function ffRangeTxt(st){
+  const lo=parseFloat(st.good_min), hi=parseFloat(st.good_max), u=st.unit?' '+st.unit:'';
+  if(isFinite(lo)&&isFinite(hi)) return `${fmtNum(lo)}–${fmtNum(hi)}${u}`;
+  if(isFinite(hi)) return `under ${fmtNum(hi)}${u}`;
+  if(isFinite(lo)) return `over ${fmtNum(lo)}${u}`;
+  return '';
+}
+
+function ffStepHead(st, n){
+  const f=S.ff;
+  return `<div class="ffprog">Step ${n}${f.symptom?` · ${esc(f.symptom)}`:''}</div><h3 style="margin:4px 0 8px">${st.power_state==='power_on'?'⚡ ':''}${esc(st.title)}</h3>`;
+}
+
+function renderFFStep(st){
+  const f=S.ff, sec=ffSec(), n=f.trail.length+1;
+  const parts=st.part_ids.map(partById).filter(Boolean);
+  const crop=parts[0]?.box ? cropCanvas(parts[0].box,600) : null;
+  const visual=st.meter_mode==='visual';
+  const m=METER_LABEL[st.meter_mode]||METER_LABEL.other;
+  const reading=st.input==='reading';
+  const range=ffRangeTxt(st);
+  let h=ffStepHead(st,n)+`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+    <span class="meter">${esc(m[0])} ${esc(visual?m[1]:(st.meter_setting||m[1]))}</span>
+    <span class="tag ${st.power_state==='power_on'?'warnTag':''}">${st.power_state==='power_on'?'⚡ Powered':'⏻ Power off'}</span>
+    ${st.confidence&&st.confidence!=='high'?`<span class="conf ${st.confidence==='low'?'low':''}" style="margin:0">${esc(st.confidence)} confidence</span>`:''}</div>`;
+  if(st.power_state==='power_on' && !(sec && sec.hazard!=='none')) h+=`<div class="warnbox small" style="margin-bottom:8px">The board is powered for this step: the mains side is live. Keep hands and probes away from it.</div>`;
+  if(crop) h+=`<img class="crop" src="${crop.toDataURL('image/jpeg',.88)}" alt="Close-up of ${esc(parts[0].ref||parts[0].name)}">`;
+  if(parts.length) h+=`<div class="legend" style="margin-bottom:10px">${parts.map(p=>`<button class="chip" data-openpart="${esc(p.id)}" title="Part details"><span class="num" style="min-width:20px;height:20px;font-size:11px;background:${partColour(p)}">${p._n}</span>${esc(p.ref||p.name)}</button>`).join('')}<button class="chip" data-showboard="${esc(parts[0].id)}">📍 Show on board</button></div>`;
+  h+=`<div>${esc(st.instruction)}</div>`;
+  if(!visual && (st.red_probe||st.black_probe)) h+=`<div class="small" style="margin-top:8px"><span style="color:#ff6b6b;font-weight:700">● Red</span> → ${esc(st.red_probe||'—')}<br><span style="font-weight:700">○ Black</span> → ${esc(st.black_probe||'—')}</div>`;
+  h+=`<div class="small" style="margin-top:8px"><b style="color:var(--ok)">Good:</b> ${esc(st.expected||range)}</div>`;
+  if(reading) h+=`<label for="ffRead">Your reading${st.unit?` (${esc(st.unit)})`:''} — optional, type OL for open circuit</label>
+    <input type="text" inputmode="decimal" id="ffRead" autocomplete="off" placeholder="${range?'Good: '+esc(range):'e.g. 0.6'}"><div class="small" id="ffSuggest" style="margin-top:4px;min-height:1.2em"></div>`;
+  h+=`<div class="ffchoice">
+      <button class="btn pass" id="ffPass">✓ ${esc(st.pass_label||'Good')}</button>
+      <button class="btn fail" id="ffFail">✗ ${esc(st.fail_label||'Bad')}</button></div>
+    <div class="btnrow">
+      <button class="btn" id="ffBackBtn" ${f.trail.length?'':'disabled'}>↩ Back</button>
+      <button class="btn" id="ffSkip">Can't do this</button></div>
+    <button class="btn block" style="margin-top:10px" id="ffAskBtn">💬 Ask about this reading</button>
+    <div id="ffAsk"></div>
+    <button class="linkbtn" id="ffRestart">Start again with a different symptom</button>`;
+  $('ffBody').innerHTML=h;
+  const rd=()=>reading?$('ffRead').value.trim():'';
+  $('ffPass').onclick=()=>ffAdvance('pass', rd());
+  $('ffFail').onclick=()=>ffAdvance('fail', rd());
+  $('ffSkip').onclick=()=>ffAdvance('skip', rd());
+  $('ffBackBtn').onclick=ffBack;
+  $('ffRestart').onclick=ffRestart;
+  $('ffAskBtn').onclick=()=>{
+    $('ffAskBtn').classList.add('hidden');
+    $('ffAsk').innerHTML=`<label for="ffAskTxt">What did you get or see?</label><textarea id="ffAskTxt" rows="3" placeholder="e.g. reads 0.2 V both ways round on one diode"></textarea><button class="btn primary block" style="margin-top:8px" id="ffAskGo">Ask</button>`;
+    if(rd()) $('ffAskTxt').value=`My reading: ${rd()}${st.unit?' '+st.unit:''}. `;
+    $('ffAskGo').onclick=()=>askFF(st);
+  };
+  if(reading){
+    const hasRange=isFinite(parseFloat(st.good_min))||isFinite(parseFloat(st.good_max));
+    $('ffRead').oninput=()=>{
+      const v=parseReading($('ffRead').value), lo=parseFloat(st.good_min), hi=parseFloat(st.good_max);
+      $('ffPass').classList.remove('suggest'); $('ffFail').classList.remove('suggest');
+      if(v==null || !hasRange){ $('ffSuggest').textContent=''; return; }
+      const ok=(!isFinite(lo)||v>=lo)&&(!isFinite(hi)||v<=hi);
+      (ok?$('ffPass'):$('ffFail')).classList.add('suggest');
+      $('ffSuggest').innerHTML = ok ? `<span style="color:var(--ok)">Within the expected range (${esc(range)}).</span>` : `<span style="color:var(--danger)">Outside the expected range (${esc(range)}).</span> <span class="muted">Not sure? Tap 💬 Ask.</span>`;
+    };
+  }
+}
+
+function renderFFLock(st){
+  const f=S.ff, n=f.trail.length+1;
+  $('ffBody').innerHTML=ffStepHead(st,n)+`<div class="errbox"><b>⚡ Live test: the appliance is plugged in for this step.</b>
+    <div class="small" style="margin-top:4px">Parts on the mains side carry lethal voltage. Only carry on if you're trained for live work. Otherwise skip it — the powered-off tests already done still count.</div>
+    <label class="ackrow"><input type="checkbox" class="ffLive"> The appliance is fed through an isolation transformer (and an RCD).</label>
+    <label class="ackrow"><input type="checkbox" class="ffLive"> I'll fit the probes with the power off, then switch on with hands clear.</label>
+    <label class="ackrow"><input type="checkbox" class="ffLive"> I'm trained for live testing, or an experienced volunteer is with me.</label></div>
+    <button class="btn primary block" style="margin-top:12px" id="ffUnlock" disabled>Show this step</button>
+    <div class="btnrow"><button class="btn" id="ffBackBtn" ${f.trail.length?'':'disabled'}>↩ Back</button><button class="btn" id="ffSkip">Skip this step</button></div>`;
+  const boxes=[...$('ffBody').querySelectorAll('.ffLive')];
+  boxes.forEach(b=>b.onchange=()=>{ $('ffUnlock').disabled=boxes.some(x=>!x.checked); });
+  $('ffUnlock').onclick=()=>{ f.ack[st.id]=true; saveCurrent(); renderFFStep(st); };
+  $('ffSkip').onclick=()=>ffAdvance('skip','');
+  $('ffBackBtn').onclick=ffBack;
+}
+
+function ffAdvance(result, reading){
+  const f=S.ff, st=ffStep(f.current); if(!st) return;
+  f.trail.push({id:st.id, result, reading:reading||'', ask:f._ask||''}); f._ask='';
+  let next = result==='fail' ? st.next_if_fail : st.next_if_pass;
+  if(f.trail.length>40) next='_loop';
+  f.current=next;
+  if(!ffStep(next)) f.ended = next || '_none';
+  saveCurrent(); renderFFCurrent();
+  if(navigator.vibrate) try{ navigator.vibrate(15); }catch(e){}
+}
+function ffBack(){
+  const f=S.ff, last=f.trail.pop(); if(!last) return;
+  f.current=last.id; f.ended=null; saveCurrent(); renderFFCurrent();
+}
+function ffRestart(){
+  const f=S.ff; if(!f) return;
+  if(f.trail.length && !confirm('Start this section again? Your test results so far will be cleared.')) return;
+  const sec=ffSec(); delete S.faults[f.secId]; S.ff=null; saveCurrent();
+  if(sec) renderFFStart(sec);
+}
+
+async function askFF(st){
+  const q=$('ffAskTxt').value.trim(); if(!q) return;
+  if(S.demo || !cfg().proxy){ $('ffAsk').innerHTML=`<div class="warnbox small" style="margin-top:8px">${S.demo?'Asking about a reading needs a real scan with your proxy set — it isn\'t available on the demo board.':'Set your proxy in ⚙︎ Settings to ask about readings.'}</div>`; $('ffAskBtn').classList.remove('hidden'); return; }
+  const f=S.ff, sec=ffSec();
+  $('ffAsk').innerHTML='<div class="spinner"></div><p class="small muted" style="text-align:center">Thinking about your reading…</p>';
+  try{
+    const hist=f.trail.map((t,i)=>{ const s=ffStep(t.id); return `${i+1}. ${s?.title||t.id}: ${t.result}${t.reading?` (reading ${t.reading})`:''}`; }).join('\n')||'none yet';
+    const parts=st.part_ids.map(partById).filter(Boolean).map(p=>`${p.ref||''} ${p.name}${p.markings?` "${p.markings}"`:''}`).join('; ');
+    const res=await callClaude({system:ASK_SYSTEM, tool:ASK_TOOL, maxTokens:1500, content:[{type:'text', text:
+`Board: ${S.scan.device_guess||'circuit board'}. Section: ${sec?.name||''} (${sec?.type||''}, hazard ${sec?.hazard||''}). Symptom: ${f.symptom||'-'}${f.note?'. '+f.note:''}
+Tests so far:
+${hist}
+Current step: ${st.title}. ${st.instruction}
+Parts: ${parts||'-'}. Meter: ${st.meter_setting||st.meter_mode}. Red probe: ${st.red_probe||'-'}. Black probe: ${st.black_probe||'-'}. Expected: ${st.expected||ffRangeTxt(st)}.
+The volunteer says: ${q}`}]});
+    if(S.ff!==f || f.current!==st.id) return;
+    f._ask=q;
+    const rec={pass:['Treat it as good','var(--ok)'],fail:['Treat it as bad','var(--danger)'],repeat:['Measure again','var(--warn)'],stop:['Stop and get help','var(--danger)']}[res.recommendation]||['Suggestion','var(--text)'];
+    $('ffAsk').innerHTML=`<div class="test" style="margin-top:10px"><b style="color:${rec[1]}">💬 ${esc(rec[0])}</b><div class="small">${esc(res.advice)}</div></div>`;
+    $('ffAskBtn').classList.remove('hidden');
+    if(res.recommendation==='pass') $('ffPass').classList.add('suggest');
+    if(res.recommendation==='fail') $('ffFail').classList.add('suggest');
+  }catch(e){
+    $('ffAsk').innerHTML=`<div class="errbox small" style="margin-top:8px">${esc(e.message)}</div>`;
+    $('ffAskBtn').classList.remove('hidden');
+  }
+}
+
+function renderFFEnd(){
+  const f=S.ff, sec=ffSec();
+  const c=ffConc(f.ended)||{title:'No conclusion reached', verdict:'unresolved', explanation:'The test sequence ran out of steps without a clear answer. Go back and use 💬 Ask on a step that gave an odd reading, or fault-find the next section.', actions:[], part_ids:[]};
+  const parts=c.part_ids.map(partById).filter(Boolean);
+  const skipped=f.trail.filter(t=>t.result==='skip').length;
+  const icon={fault_found:'🔧',section_ok:'✅',unresolved:'❓'}[c.verdict]||'❓';
+  const R={pass:['✓ good','var(--ok)'],fail:['✗ bad','var(--danger)'],skip:['– skipped','var(--muted)']};
+  const others=S.scan.sections.filter(s=>s.id!==f.secId);
+  let h=`<div class="ffprog">Result after ${f.trail.length} test${f.trail.length===1?'':'s'}</div>
+    <div class="verdict ${c.verdict}"><b>${icon} ${esc(c.title)}</b><div class="small" style="margin-top:4px">${esc(c.explanation)}</div></div>`;
+  if(skipped) h+=`<div class="warnbox small">${skipped} step${skipped===1?' was':'s were'} skipped, so treat this result as unconfirmed.</div>`;
+  if(c.actions.length) h+=`<h4>What to do next</h4><ol>${c.actions.map(a=>`<li>${esc(a)}</li>`).join('')}</ol>`;
+  if(parts.length) h+=`<h4>Parts involved</h4><div class="legend">${parts.map(p=>`<button class="chip" data-openpart="${esc(p.id)}"><span class="num" style="min-width:20px;height:20px;font-size:11px;background:${partColour(p)}">${p._n}</span>${esc(p.ref||p.name)}</button>`).join('')}</div><p class="small muted">Tap a part for its pinout, tests and replacement suppliers.</p>`;
+  h+=`<h4>Your tests</h4><ol class="trail small">${f.trail.map(t=>{ const s=ffStep(t.id); const r=R[t.result]||R.skip; return `<li>${esc(s?.title||t.id)} — <b style="color:${r[1]}">${r[0]}</b>${t.reading?` · ${esc(t.reading)}${s?.unit&&!/[a-zΩµ]/i.test(t.reading)?' '+esc(s.unit):''}`:''}</li>`; }).join('')}</ol>`;
+  if(f.proc.assumptions) h+=`<details class="small" style="margin-top:8px"><summary class="muted">Assumptions made without a schematic</summary><div style="margin-top:6px">${esc(f.proc.assumptions)}</div></details>`;
+  if(c.verdict!=='fault_found' && others.length) h+=`<h4>Fault-find another section</h4><div class="legend">${others.map(s=>`<button class="chip" data-ffsec="${esc(s.id)}"><span class="dot" style="background:${secColour(s.type)}"></span>${esc(s.name)}${S.faults[s.id]?.ended?' ✓':''}</button>`).join('')}</div>`;
+  h+=`<div class="btnrow" style="margin-top:16px"><button class="btn" id="ffBackBtn" ${f.trail.length?'':'disabled'}>↩ Back a step</button><button class="btn" id="ffDone">Done</button></div>
+    <button class="linkbtn" id="ffRestart">Start this section again</button>`;
+  $('ffBody').innerHTML=h;
+  $('ffBackBtn').onclick=ffBack; $('ffRestart').onclick=ffRestart; $('ffDone').onclick=closeFF;
+  if(navigator.vibrate) try{ navigator.vibrate([20,60,20]); }catch(e){}
+}
+
+function ffBodyClick(e){
+  const op=e.target.closest('[data-openpart]');
+  if(op){ closeFF(); selectPart(op.dataset.openpart); return; }
+  const sb=e.target.closest('[data-showboard]');
+  if(sb){
+    closeFF();
+    if(S.filter && S.filter!==S.ff?.secId){ S.filter=null; refresh(); }
+    if(!S.showParts){ S.showParts=true; $('tgParts').classList.add('on'); }
+    selectPart(sb.dataset.showboard, false);
+    $('scroller').scrollIntoView({behavior:'smooth', block:'center'});
+    return;
+  }
+  const fs=e.target.closest('[data-ffsec]');
+  if(fs) openFF(fs.dataset.ffsec);
+}
+
+/* Built-in procedure for the demo board's mains / HV sections */
+function demoFault(sec){
+  if(!['mains','psu_primary'].includes(sec.type)) return null;
+  const st=(id,title,parts,mode,setting,red,black,instruction,expected,o)=>Object.assign({id,title,instruction,part_ids:parts,power_state:'power_off',live_mains:false,meter_mode:mode,meter_setting:setting,red_probe:red,black_probe:black,expected,input:'pass_fail',confidence:'high'},o);
+  return {
+    summary:'Works from the mains inlet towards the switching IC, doing every powered-off check first.',
+    assumptions:'Demo procedure: the values are typical for a small flyback supply like this one.',
+    steps:[
+      st('t1','Look for visible damage',['p2','p3','p7','p8'],'visual','','','','With the board unplugged, look closely at F1, RV1, C1, U1 and the area round them for scorch marks, a cracked varistor, a domed or leaking capacitor, and dark or cracked solder joints.','No burns, cracks, bulges or cracked joints.',{pass_label:'No damage',fail_label:'Damage found',next_if_pass:'t2',next_if_fail:'c_visible'}),
+      st('t2','Check C1 is discharged',['p7'],'dc_voltage','600 V DC','C1 + leg','C1 − leg (striped side)','Measure the DC voltage across the big capacitor C1 before touching anything else on the left half of the board.','Under 5 V.',{input:'reading',unit:'V',good_min:0,good_max:5,pass_label:'Under 5 V',fail_label:'5 V or more',next_if_pass:'t3',next_if_fail:'t2b'}),
+      st('t2b','Discharge C1 safely',['p7'],'dc_voltage','600 V DC','C1 + leg','C1 − leg','Hold a 2.2 kΩ 5 W resistor in insulated clips (or a discharge tool) across C1’s legs for 10 seconds. Never short it with a screwdriver. Then measure again.','Under 5 V after discharging.',{input:'reading',unit:'V',good_min:0,good_max:5,pass_label:'Now under 5 V',fail_label:'Still charged',next_if_pass:'t3',next_if_fail:'c_stop'}),
+      st('t3','Check fuse F1',['p2'],'resistance','Ω 200 range (or continuity)','F1 one end','F1 other end','Measure across the two end caps of fuse F1.','Under 1 Ω (beeps on continuity).',{input:'reading',unit:'Ω',good_min:0,good_max:1,pass_label:'Fuse OK',fail_label:'Open (OL)',next_if_pass:'t7',next_if_fail:'t4'}),
+      st('t4','Fuse blown: test bridge BD1',['p6'],'diode','Diode test','BD1 − pin, then each ~ pin','Each ~ pin, then BD1 + pin','A blown fuse usually means a short. Check all four diodes in BD1: from − to each ~ pin, and from each ~ pin to +, then swap the probes.','About 0.4–0.7 V one way and OL the other way on all four diodes.',{pass_label:'All four OK',fail_label:'Near 0 V on any',next_if_pass:'t5',next_if_fail:'c_bridge'}),
+      st('t5','Check U1 for a short',['p8'],'resistance','Ω 2 kΩ range','U1 drain (D) pin','U1 source (S) pins','Measure between U1’s drain pin (towards the transformer) and its source pins (to C1 −). A shorted switching IC is the next most common cause of a blown fuse.','Well over 100 Ω (it may climb slowly as C1 charges from the meter).',{input:'reading',unit:'Ω',good_min:100,pass_label:'Not shorted',fail_label:'Under 100 Ω',next_if_pass:'t6',next_if_fail:'c_u1',confidence:'medium'}),
+      st('t6','Check varistor RV1',['p3'],'resistance','Ω 2 MΩ range','RV1 one leg','RV1 other leg','Measure across RV1. In circuit, other mains-side parts sit in parallel, so if it reads low, lift one RV1 leg and measure again.','Open circuit or several MΩ.',{pass_label:'Open / high',fail_label:'Low / short',next_if_pass:'c_fuse_only',next_if_fail:'c_mov'}),
+      st('t7','Continuity from inlet to bridge',['p1','p5','p6'],'continuity','Continuity (beep)','CN1 L, then CN1 N','Each BD1 ~ pin','The fuse is fine, so check mains actually reaches the bridge: CN1 L to one BD1 ~ pin, then CN1 N to the other ~ pin (through the choke LF1).','Beeps (a few ohms at most) on both paths.',{pass_label:'Both beep',fail_label:'One is open',next_if_pass:'t8',next_if_fail:'c_open',confidence:'medium'}),
+      st('t8','Check C1 health',['p7'],'esr','ESR / capacitance','C1 + leg','C1 − leg','Measure C1 with an ESR or LCR meter. In-circuit ESR is usually fine; lift one leg for an accurate capacitance reading.','About 38–56 µF, ESR under about 2 Ω.',{pass_label:'Within range',fail_label:'Low µF or high ESR',next_if_pass:'t9',next_if_fail:'c_c1',confidence:'medium'}),
+      st('t9','Check start-up resistor R1',['p9'],'resistance','Ω 2 MΩ range','R1 one end','R1 other end','Measure R1. If it reads much lower than expected, a parallel path is likely: lift one leg.','About 1 MΩ.',{input:'reading',unit:'MΩ',good_min:0.9,good_max:1.1,pass_label:'About 1 MΩ',fail_label:'Open or far off',next_if_pass:'t10',next_if_fail:'c_r1',confidence:'medium'}),
+      st('t10','Measure the HV rail live',['p7'],'dc_voltage','600 V DC','C1 + leg','C1 − leg','Clip the probes on with power off, then power up through an isolation transformer and read the DC across C1. Unplug and discharge C1 again afterwards.','About 300–340 V DC.',{power_state:'power_on',live_mains:true,input:'reading',unit:'V',good_min:290,good_max:350,pass_label:'About 325 V',fail_label:'Low or none',next_if_pass:'c_primary_ok',next_if_fail:'c_no_hv'})
+    ],
+    conclusions:[
+      {id:'c_visible',title:'Visible damage found',verdict:'fault_found',explanation:'Burnt, cracked or bulging parts are faulty, but they have often failed because something else did.',actions:['Note the damaged parts and replace them like-for-like.','Test the surrounding parts before powering up: a scorched MOV or fuse often means BD1 or U1 has shorted too.','For the first power-up after the repair, use a lamp limiter (series bulb).'],part_ids:['p2','p3','p7','p8']},
+      {id:'c_stop',title:'Stop: C1 won’t discharge',verdict:'unresolved',explanation:'A capacitor that stays charged means the board may still be connected to mains, or the discharge resistor isn’t making contact.',actions:['Check the appliance is unplugged at the wall.','Get an experienced volunteer before going any further.']},
+      {id:'c_bridge',title:'Bridge rectifier BD1 shorted',verdict:'fault_found',explanation:'A diode reading near 0 V both ways round is a short circuit, which blows the fuse at switch-on.',actions:['Replace BD1 (KBP207, 2 A 1000 V, or higher rated).','Check U1 for a short too before fitting a new fuse.','Fit a new T2AL250V fuse and power up through a lamp limiter.'],part_ids:['p6','p8','p2']},
+      {id:'c_u1',title:'Switching IC U1 shorted',verdict:'fault_found',explanation:'A low drain–source reading means the TNY278’s internal MOSFET has failed, which is common after a surge.',actions:['Replace U1 (TNY278) with a genuine part from a reputable supplier.','Check R2 and the parts around the transformer primary, as they often fail with it.','Fit a new fuse, then power up through a lamp limiter.'],part_ids:['p8','p10','p2']},
+      {id:'c_mov',title:'Varistor RV1 shorted',verdict:'fault_found',explanation:'A shorted MOV conducts straight across the mains and blows the fuse, usually after a surge.',actions:['Replace RV1 with a 10D471K (470 V, 10 mm disc).','Fit a new fuse and power up through a lamp limiter.'],part_ids:['p3','p2']},
+      {id:'c_fuse_only',title:'No short found',verdict:'section_ok',explanation:'BD1, U1 and RV1 all test fine, so the fuse may have aged or blown on a one-off surge.',actions:['Fit a new T2AL250V fuse (same rating, never higher).','Power up through a lamp limiter. If the bulb stays bright, there is still a short: unplug and test again.','If it powers up but does nothing, fault-find the Transformer & feedback section next.'],part_ids:['p2']},
+      {id:'c_open',title:'Open circuit between inlet and bridge',verdict:'fault_found',explanation:'Mains isn’t reaching the rectifier. The usual causes are a cracked solder joint, a burnt track or an open choke winding.',actions:['Check continuity across each LF1 winding.','Reflow the joints on CN1, F1 and LF1.','Look for a burnt or lifted track.'],part_ids:['p1','p5']},
+      {id:'c_c1',title:'Bulk capacitor C1 failed',verdict:'fault_found',explanation:'Low capacitance or high ESR makes the supply unstable or stops it starting.',actions:['Replace C1 with 47 µF 400 V, 105 °C, same size or smaller, observing polarity.'],part_ids:['p7']},
+      {id:'c_r1',title:'Start-up resistor R1 open',verdict:'fault_found',explanation:'Without start-up current the controller never begins switching, so the board is dead even with a good fuse.',actions:['Replace R1 with 1 MΩ of the same wattage and voltage rating.'],part_ids:['p9']},
+      {id:'c_no_hv',title:'No HV rail although the parts test fine',verdict:'unresolved',explanation:'With good powered-off readings, this points to an intermittent open connection the meter didn’t catch.',actions:['Unplug and discharge C1.','Recheck continuity from CN1 to BD1 while gently flexing the board.','Check the mains lead and the appliance’s own switch.'],part_ids:['p1','p6']},
+      {id:'c_primary_ok',title:'Primary side looks healthy',verdict:'section_ok',explanation:'Mains reaches C1 at the right voltage, so the fault is more likely U1 not switching or something on the low-voltage side.',actions:['Unplug and discharge C1.','Fault-find the Transformer & feedback section next (U2 and D5).','Then the Low-voltage supply section (C5 and U3).'],part_ids:['p8']}
+    ]};
+}
+
 /* ---------- built-in quick test guides (offline fallback) ---------- */
 const GUIDES = [
   [/electrolytic|capacitor_e|bulk/i, 'Electrolytic capacitor', ['Look for a domed or split top, leaking electrolyte or a raised base — any of these means replace it.','Discharge first (large caps via a suitable resistor), then check capacitance and ESR with an ESR/LCR meter; in-circuit ESR readings are usually valid.','Replace with the same capacitance, equal or higher voltage, 105 °C rated, low-ESR type, observing polarity.']],
@@ -1290,7 +1699,7 @@ function demoData(){
 
 function runDemo(){
   S.scanToken=0; S.partsLoading=false; S.scanning=false;
-  S.demo=true; S.details={}; S.raw=null; S.title=''; S.currentId=null;
+  S.demo=true; S.details={}; S.raw=null; S.title=''; S.currentId=null; S.faults={}; S.ff=null; closeFF();
   const url=demoSVG();
   $('boardImg').src=url;
   loadImage(url).then(img=>{ S.fullCanvas=toCanvas(img,2000); }).catch(()=>{});
@@ -1323,7 +1732,7 @@ async function saveCurrent(){
   try{
     if(!S.currentId){ S.currentId='scan-'+Date.now(); S.created=Date.now(); }
     await dbPut({id:S.currentId, created:S.created, updated:Date.now(), title:S.title||S.scan?.device_guess||'Circuit board',
-      note:$('note').value.trim(), image:S.imageData, thumb:S.thumb, scan:S.raw, details:S.details});
+      note:$('note').value.trim(), image:S.imageData, thumb:S.thumb, scan:S.raw, details:S.details, faults:S.faults});
     $('savedNote').textContent='✓ Saved on this device';
   }catch(e){ $('savedNote').textContent='Could not save this scan on this device.'; }
 }
@@ -1346,7 +1755,7 @@ async function openSaved(id){
   const r=await dbGet(id); if(!r) return;
   S.scanToken=0; S.partsLoading=false;
   S.demo=false; S.currentId=r.id; S.created=r.created; S.title=r.title; S.imageData=r.image; S.thumb=r.thumb;
-  S.details=r.details||{}; S.raw=r.scan; $('note').value=r.note||'';
+  S.details=r.details||{}; S.faults=r.faults||{}; S.ff=null; closeFF(); S.raw=r.scan; $('note').value=r.note||'';
   $('boardImg').src=r.image;
   const img=await loadImage(r.image); S.fullCanvas=toCanvas(img,3200);
   S.scan=normalise(JSON.parse(JSON.stringify(r.scan)));
@@ -1445,7 +1854,11 @@ $('board').onclick=e=>{
 $('partList').onclick=e=>{ const p=e.target.closest('[data-part]'); if(p) selectPart(p.dataset.part); };
 $('copyDebug').onclick=()=>{ try{ navigator.clipboard.writeText($('errDebug').textContent); $('copyDebug').textContent='Copied'; }catch(e){} };
 $('copyRaw').onclick=()=>{ try{ navigator.clipboard.writeText($('rawData').textContent); $('copyRaw').textContent='Copied'; }catch(e){} };
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeSheet(); closeSettings(); } });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeSheet(); closeSettings(); closeFF(); } });
+$('secDesc').onclick=e=>{ const b=e.target.closest('[data-ff]'); if(b) openFF(b.dataset.ff); };
+$('ffClose').onclick=closeFF; $('ffBg').onclick=closeFF;
+$('ffResume').onclick=()=>{ if(S.ff) openFF(S.ff.secId); };
+$('ffBody').addEventListener('click', ffBodyClick);
 
 refreshHint();
 renderSaved();
