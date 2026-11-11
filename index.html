@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f1419">
 <title>BoardScan – circuit board analyser</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
   :root{
     --bg:#0f1419; --panel:#182028; --panel2:#1f2933; --line:#2c3a47; --text:#e6edf3; --muted:#9aa7b4;
@@ -92,6 +98,22 @@
   .saved .t{font-weight:600}
   .preview{max-height:240px;max-width:100%;border-radius:10px;display:block;margin:10px auto}
   footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
+  .scroller{touch-action:pan-x pan-y}
+  .sheet{animation:sheetUp .22s ease-out}
+  @keyframes sheetUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+  .sheet-bg{animation:fadeIn .2s ease-out}
+  @keyframes fadeIn{from{opacity:0}}
+  #pBody.swapL{animation:swapL .2s ease-out} #pBody.swapR{animation:swapR .2s ease-out}
+  @keyframes swapL{from{opacity:0;transform:translateX(40px)}} @keyframes swapR{from{opacity:0;transform:translateX(-40px)}}
+  .navbtn{min-width:40px}
+  .navbtn:disabled{opacity:.3}
+  #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:60;background:#22303c;border:1px solid var(--line);color:var(--text);padding:10px 16px;border-radius:12px;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.4);max-width:90vw;transition:opacity .25s;opacity:0;pointer-events:none}
+  #toast.show{opacity:1}
+  .loadingDots::after{content:'';animation:dots 1.2s steps(4,end) infinite}
+  @keyframes dots{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}}
+  .qcheck li{margin:6px 0}
+  .pin{transition:transform .15s}
+  .part{transition:background .15s}
 </style>
 </head>
 <body>
@@ -132,6 +154,20 @@
     </div>
   </section>
 
+  <!-- PHOTO CHECK -->
+  <section id="checkView" class="hidden">
+    <div class="card">
+      <h2>Check this photo</h2>
+      <img id="checkPreview" class="preview" alt="">
+      <ul class="qcheck" id="checkList"></ul>
+      <p class="small muted">A better photo gives better results and saves a wasted scan.</p>
+      <div class="btnrow">
+        <button class="btn" id="checkRetake">📷 Retake</button>
+        <button class="btn primary" id="checkGo">Scan anyway</button>
+      </div>
+    </div>
+  </section>
+
   <!-- SCANNING -->
   <section id="scanView" class="hidden">
     <div class="card" style="text-align:center">
@@ -168,9 +204,7 @@
         <button class="toggle on" id="tgParts">Parts</button>
         <button class="toggle" id="tgAdd">＋ Add part</button>
         <span style="flex:1"></span>
-        <button class="toggle" id="zoomOut">−</button>
-        <span class="small muted" id="zoomLbl">100%</span>
-        <button class="toggle" id="zoomIn">＋</button>
+        <button class="toggle" id="zoomLbl" title="Tap to reset zoom">100%</button>
       </div>
       <div class="scroller" id="scroller">
         <div class="board" id="board">
@@ -181,7 +215,7 @@
       </div>
       <div class="warnbox small hidden" id="addHint" style="margin:0 0 8px">Tap the missed part on the photo (zoom in first for small parts). Tap ＋ Add part again to cancel.</div>
       <p class="small" id="placeNote" style="margin:8px 0 0;color:var(--warn)"></p>
-      <p class="small muted" style="margin:8px 0 0">Tap a numbered marker or a part in the list. Turn Parts off to see section names. Outlines are approximate.</p>
+      <p class="small muted" style="margin:8px 0 0">Pinch or double-tap to zoom, drag to move. Tap a numbered marker or a part in the list. Turn Parts off to see section names.</p>
     </div>
 
     <div class="card">
@@ -209,12 +243,17 @@
   <footer>BoardScan prototype · AI identification can be wrong — always confirm markings and measurements before replacing parts.</footer>
 </main>
 
+<div id="toast"></div>
+
 <!-- PART SHEET -->
 <div class="sheet-bg hidden" id="sheetBg"></div>
 <div class="sheet hidden" id="sheet" role="dialog" aria-modal="true">
   <div class="grab"></div>
   <div style="display:flex;align-items:flex-start;gap:10px">
-    <div style="flex:1"><h3 id="pTitle"></h3><div class="small muted" id="pSub"></div></div>
+    <div style="flex:1;min-width:0"><h3 id="pTitle"></h3><div class="small muted" id="pSub"></div></div>
+    <button class="iconbtn navbtn" id="prevPart" title="Previous part">‹</button>
+    <span class="small muted" id="pPos" style="align-self:center;white-space:nowrap"></span>
+    <button class="iconbtn navbtn" id="nextPart" title="Next part">›</button>
     <button class="iconbtn" id="sheetClose">✕</button>
   </div>
   <div id="pBody"></div>
@@ -274,7 +313,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 
 function show(view){
   const rc=document.getElementById('rawCard'); if(rc) rc.classList.toggle('hidden', view!=='resultView' || !S.raw);
-  ['startView','scanView','errorView','resultView'].forEach(v => $(v).classList.toggle('hidden', v!==view));
+  ['startView','checkView','scanView','errorView','resultView'].forEach(v => $(v).classList.toggle('hidden', v!==view));
   $('newBtn').classList.toggle('hidden', view==='startView');
   window.scrollTo(0,0);
 }
@@ -315,18 +354,29 @@ async function callClaude({system, content, tool, maxTokens}){
   if(!proxy) throw new Error('No proxy URL set. Open ⚙︎ Settings and add your Cloudflare Worker URL.');
   const headers = {'content-type':'application/json'};
   if(key) headers['x-app-key'] = key;
-  let r;
-  try{
-    r = await fetch(proxy, {method:'POST', headers, body: JSON.stringify({
+  const body = JSON.stringify({
       model, max_tokens: maxTokens,
       system: system + `\n\nIMPORTANT: Respond ONLY by calling the ${tool.name} tool exactly once with your complete results. Do not reply in plain text.`,
       messages:[{role:'user', content}],
       tools:[tool], tool_choice:{type:'auto'}
-    })});
-  }catch(e){ throw mkErr('Could not reach the proxy. Check your connection, and keep the screen on and the app open while a scan runs.', {tool:tool.name, fetchError:String(e)}); }
-  const raw = await r.text();
-  let data={}; try{ data=JSON.parse(raw); }catch(e){}
-  const dbg = {tool:tool.name, status:r.status, stop_reason:data.stop_reason, usage:data.usage, blocks:(data.content||[]).map(b=>b.type), body:raw.slice(0,1500)};
+    });
+  const RETRY_STATUS=[408,429,500,502,503,504,529], WAITS=[2500,6000];
+  let r, raw='', data={}, dbg;
+  for(let attempt=0;;attempt++){
+    let netErr=null;
+    try{ r = await fetch(proxy, {method:'POST', headers, body}); }catch(e){ netErr=e; }
+    if(!netErr){
+      raw = await r.text(); data={}; try{ data=JSON.parse(raw); }catch(e){}
+      dbg = {tool:tool.name, status:r.status, attempts:attempt+1, stop_reason:data.stop_reason, usage:data.usage, blocks:(data.content||[]).map(b=>b.type), body:raw.slice(0,1500)};
+      if(r.ok || !RETRY_STATUS.includes(r.status)) break;
+    }
+    if(attempt>=WAITS.length){
+      if(netErr) throw mkErr('Could not reach the proxy. Check your connection, and keep the screen on and the app open while a scan runs.', {tool:tool.name, attempts:attempt+1, fetchError:String(netErr)});
+      break;
+    }
+    toast(netErr ? 'Connection dropped — retrying…' : 'The AI service is busy — retrying…');
+    await new Promise(res=>setTimeout(res, WAITS[attempt]));
+  }
   if(!r.ok){
     const m = data?.error?.message || data?.error || r.statusText;
     throw mkErr(`The analysis service returned an error (${r.status}): ${m}`, dbg);
@@ -339,6 +389,22 @@ async function callClaude({system, content, tool, maxTokens}){
   const m = text.match(/\{[\s\S]*\}/);
   if(m){ try{ return deepParse(JSON.parse(m[0])); }catch(e){} }
   throw mkErr('The analysis came back without structured results. Please try again.', dbg);
+}
+let toastTimer;
+function toast(msg, ms=2600){
+  const t=document.getElementById('toast'); if(!t) return;
+  t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'), ms);
+}
+async function keepAwake(on){
+  try{
+    if(on){ if('wakeLock' in navigator && !S.wake) S.wake = await navigator.wakeLock.request('screen'); }
+    else if(S.wake){ await S.wake.release(); S.wake=null; }
+  }catch(e){}
+}
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible' && S.scanning){ S.wake=null; keepAwake(true); } });
+function setStatus(msg){
+  $('scanMsg').textContent=msg; S.partsStatus=msg;
+  if(S.scan && !$('resultView').classList.contains('hidden')) renderPlaceNote();
 }
 function mkErr(msg, debug){ const e=new Error(msg); e.debug=debug; return e; }
 
@@ -464,33 +530,33 @@ function tileCanvas(span){
   return c;
 }
 
-async function scanTiles(note){
+async function scanTiles(note, onParts, token){
   const jobs=[];
-  for(let r=0;r<2;r++) for(let c=0;c<2;c++){
-    const span={x:TILE_SPANS[c], y:TILE_SPANS[r]}, name=TILE_NAMES[r][c];
-    jobs.push({span,name});
-  }
+  for(let r=0;r<2;r++) for(let c=0;c<2;c++) jobs.push({span:{x:TILE_SPANS[c], y:TILE_SPANS[r]}, name:TILE_NAMES[r][c]});
   let done=0;
   const results = await Promise.allSettled(jobs.map(async j=>{
     const content=[
       {type:'image', source:{type:'base64', media_type:'image/jpeg', data:b64(tileCanvas(j.span))}},
       {type:'text', text:`This image is the ${j.name} quarter of a larger circuit board photo (the quarters overlap slightly). ${note?`The board is from: ${note}. `:''}List every component in this quarter. Include parts cut off at the edge only if at least half of the part is visible. Bounding boxes are relative to THIS image.`}
     ];
-    const res = await getParts(content);
-    done++; $('scanMsg').textContent=`Detailed scan: ${done} of 4 quarters done…`;
-    const [x0,x1]=j.span.x, [y0,y1]=j.span.y;
-    return asArray(res?.components).map(parseMaybe).filter(p=>p&&typeof p==='object').map(p=>{
-      const b=fixBox(p.box);
-      if(b) p.box=[ Math.round(x0+b[0]*(x1-x0)/1000), Math.round(y0+b[1]*(y1-y0)/1000), Math.round(b[2]*(x1-x0)/1000), Math.round(b[3]*(y1-y0)/1000) ];
-      else p.box=null;
-      p._tile=j.name; return p;
-    });
+    try{
+      const res = await getParts(content);
+      const [x0,x1]=j.span.x, [y0,y1]=j.span.y;
+      const parts = asArray(res?.components).map(parseMaybe).filter(p=>p&&typeof p==='object').map(p=>{
+        const b=fixBox(p.box);
+        p.box = b ? [ Math.round(x0+b[0]*(x1-x0)/1000), Math.round(y0+b[1]*(y1-y0)/1000), Math.round(b[2]*(x1-x0)/1000), Math.round(b[3]*(y1-y0)/1000) ] : null;
+        return p;
+      });
+      if(token===S.scanToken) onParts(parts);
+      return parts.length;
+    } finally {
+      done++; if(token===S.scanToken) setStatus(`Finding parts: ${done} of 4 quarters done`);
+    }
   }));
   const ok=results.filter(r=>r.status==='fulfilled');
   if(!ok.length) throw results[0].reason;
-  const parts=mergeParts(ok.flatMap(r=>r.value));
   const failed=results.length-ok.length;
-  return {components:parts, _tileNote: failed?`${failed} of 4 quarters failed, so some parts may be missing.`:''};
+  return {_tileNote: failed?`${failed} of 4 quarters failed, so some parts may be missing.`:''};
 }
 
 const typeKey = t => String(t||'').toLowerCase().replace(/capacitor_?(electrolytic|ceramic|film)?/,'capacitor').replace(/_/g,' ').trim();
@@ -501,26 +567,22 @@ function overlapRatio(a,b){
   const inter=ix*iy; if(!inter) return 0;
   return inter/Math.min(a[2]*a[3], b[2]*b[3]);   // share of the smaller box covered
 }
-function mergeParts(list){
-  const kept=[];
+/* Merge new parts into the accumulated list. Existing parts keep their id and number. */
+function mergeInto(acc, list){
+  const score=x=>(CONF[x.confidence]||1)*10 + (x.markings?5:0) + (x.box?x.box[2]*x.box[3]/20000:0);
   for(const p of list){
-    const dup = kept.find(k=>{
+    const dup = acc.find(k=>{
       if(!k.box||!p.box) return false;
       const ov=overlapRatio(k.box,p.box);
       const sameType = typeKey(k.type)===typeKey(p.type);
-      const sameRef = k.ref && p.ref && k.ref.toUpperCase()===p.ref.toUpperCase();
+      const sameRef = k.ref && p.ref && String(k.ref).toUpperCase()===String(p.ref).toUpperCase();
       return sameRef ? ov>0.05 : (sameType && ov>0.45) || ov>0.8;
     });
-    if(!dup){ kept.push(p); continue; }
-    // keep the better entry: higher confidence, readable markings, then larger (less cut-off) box
-    const score=x=>(CONF[x.confidence]||1)*10 + (x.markings?5:0) + (x.box?x.box[2]*x.box[3]/20000:0);
-    if(score(p)>score(dup)) Object.assign(dup, p);
+    if(!dup){ p.id='p'+(++S.nextId); acc.push(p); continue; }
+    if(score(p)>score(dup)){ const id=dup.id; Object.assign(dup, p, {id}); }
     else { if(!dup.ref&&p.ref) dup.ref=p.ref; if(!dup.markings&&p.markings){ dup.markings=p.markings; dup.readable=true; } }
   }
-  // stable reading order: top-to-bottom, left-to-right in bands
-  kept.sort((a,b)=>{ const ay=a.box?Math.round(a.box[1]/120):99, by=b.box?Math.round(b.box[1]/120):99; return ay-by || (a.box?.[0]??0)-(b.box?.[0]??0); });
-  kept.forEach((p,i)=>{ p.id='p'+(i+1); delete p._tile; });
-  return kept;
+  return acc;
 }
 
 /* ---------- tap to add a missed part ---------- */
@@ -679,16 +741,57 @@ function scopeTrace(sc){
     <text x="6" y="${Hh-6}" font-size="11" fill="#ffd60a" font-family="monospace">${esc([sc.frequency,sc.amplitude].filter(Boolean).join('  '))}</text></svg>`;
 }
 
+/* ---------- photo quality check (on the phone, no API cost) ---------- */
+function checkPhoto(img){
+  const c=toCanvas(img,512), g=c.getContext('2d'), W=c.width, H=c.height;
+  const d=g.getImageData(0,0,W,H).data, L=new Float32Array(W*H);
+  let sum=0, bright=0;
+  for(let i=0,j=0;i<d.length;i+=4,j++){ const v=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; L[j]=v; sum+=v; if(v>250) bright++; }
+  const mean=sum/(W*H);
+  let n=0, m=0, m2=0;
+  for(let y=1;y<H-1;y++) for(let x=1;x<W-1;x++){
+    const k=y*W+x, lap=4*L[k]-L[k-1]-L[k+1]-L[k-W]-L[k+W];
+    n++; const dlt=lap-m; m+=dlt/n; m2+=dlt*(lap-m);
+  }
+  const sharp=m2/Math.max(1,n-1), glare=bright/(W*H)*100;
+  const short=Math.min(img.naturalWidth||img.width, img.naturalHeight||img.height);
+  const issues=[];
+  if(sharp<60) issues.push(['Looks blurry','Hold the phone steady, tap the screen on the board to focus, and keep a little further away if it won\'t focus close up.']);
+  if(mean<55) issues.push(['Too dark','Use a desk lamp or daylight. Avoid the flash — it causes glare on glossy boards.']);
+  if(mean>215) issues.push(['Very bright / washed out','Move away from direct light or lower the exposure.']);
+  if(glare>3) issues.push(['Glare on the board','Angle the light from the side, or tilt the board slightly, so shiny parts don\'t reflect.']);
+  if(short<900) issues.push(['Low resolution','Use the phone camera at full resolution, not a screenshot or messaging-app copy.']);
+  return {issues, stats:{sharp:Math.round(sharp), mean:Math.round(mean), glare:+glare.toFixed(2), short}};
+}
+
 /* ---------- scanning ---------- */
 async function startScan(file){
   if(!file) return;
   if(!cfg().proxy){ openSettings(); return; }
-  S.demo=false; S.details={}; S.currentId=null; S.raw=null; S.title='';
+  let url, img;
+  try{ url=URL.createObjectURL(file); img=await loadImage(url); }catch(e){ showError(e.message); return; }
+  const q=checkPhoto(img);
+  S.lastCheck=q.stats;
+  if(q.issues.length){
+    $('checkPreview').src=url;
+    $('checkList').innerHTML=q.issues.map(([t,h])=>`<li><b>⚠ ${esc(t)}</b><div class="small muted">${esc(h)}</div></li>`).join('');
+    $('checkGo').onclick=()=>runScan(img,url);
+    show('checkView');
+    return;
+  }
+  runScan(img,url);
+}
+
+async function runScan(img, url){
+  S.demo=false; S.details={}; S.currentId=null; S.raw=null; S.scan=null; S.title='';
+  const token = S.scanToken = Date.now();
+  S.acc=[]; S.nextId=0; S.partsLoading=true; S.scanning=true;
+  keepAwake(true);
   try{
-    const url = URL.createObjectURL(file);
-    const img = await loadImage(url);
     S.fullCanvas = toCanvas(img, 3200);
     const scanCanvas = toCanvas(img, 1568);
+    S.imageData = toCanvas(S.fullCanvas, 2000).toDataURL('image/jpeg', .85);
+    S.thumb = toCanvas(S.fullCanvas, 160).toDataURL('image/jpeg', .7);
     $('scanPreview').src = url; $('boardImg').src = url;
     show('scanView');
     const note = $('note').value.trim();
@@ -697,23 +800,52 @@ async function startScan(file){
       {type:'text', text: note ? `The user says this board is from: ${note}` : 'No description of the device was given.'}
     ];
     const detailed = $('detailedChk').checked;
-    $('scanMsg').textContent = detailed ? 'Detailed scan: analysing 4 quarters at full resolution…' : 'Analysing board sections and parts…';
-    const [ov, pr] = await Promise.allSettled([
-      callClaude({system:SCAN_SYSTEM+OVERVIEW_FOCUS, content, tool:OVERVIEW_TOOL, maxTokens:5000}),
-      detailed ? scanTiles(note) : getParts(content)
-    ]);
-    if(ov.status==='rejected') throw ov.reason;
-    const res = {...ov.value, components: pr.status==='fulfilled' ? asArray(pr.value?.components) : [], detailed};
-    if(pr.status==='fulfilled' && pr.value?._tileNote) res._tileNote = pr.value._tileNote;
-    if(pr.status==='rejected'){ res._partsError = pr.reason?.message || 'unknown error'; S.lastDebug = pr.reason?.debug; }
-    S.raw = res;
-    S.scan = normalise(JSON.parse(JSON.stringify(res)));
-    S.imageData = toCanvas(S.fullCanvas, 2000).toDataURL('image/jpeg', .85);
-    S.thumb = toCanvas(S.fullCanvas, 160).toDataURL('image/jpeg', .7);
-    S.title = S.scan.device_guess || 'Circuit board';
-    renderResult();
+    setStatus(detailed ? 'Detailed scan: looking at the board in 4 quarters' : 'Analysing the board');
+
+    const onParts = list => {
+      mergeInto(S.acc, list);
+      if(S.raw && token===S.scanToken){ S.raw.components=[...S.acc]; updateScan(); }
+    };
+    const ovP = callClaude({system:SCAN_SYSTEM+OVERVIEW_FOCUS, content, tool:OVERVIEW_TOOL, maxTokens:5000}).then(ov=>{
+      if(token!==S.scanToken) return ov;
+      S.raw={...ov, components:[...S.acc], detailed};
+      S.title=ov.device_guess||'Circuit board';
+      S.scan=normalise(JSON.parse(JSON.stringify(S.raw)));
+      if(S.partsLoading && !S.acc.length) S.partsStatus = detailed ? 'Finding parts: 0 of 4 quarters done' : 'Finding parts';
+      renderResult();
+      return ov;
+    });
+    const partsP = detailed ? scanTiles(note, onParts, token)
+                            : getParts(content).then(r=>{ if(token===S.scanToken) onParts(asArray(r?.components).map(parseMaybe).filter(x=>x&&typeof x==='object')); return {}; });
+
+    const [ov, pr] = await Promise.allSettled([ovP, partsP]);
+    if(token!==S.scanToken) return;
+    S.partsLoading=false;
+    if(ov.status==='rejected'){
+      if(!S.acc.length) throw ov.reason;
+      S.raw={device_guess:'Circuit board', board_summary:'The board overview could not be loaded this time, but the parts were found.', image_quality:{}, sections:[], safety_notes:[], components:[...S.acc], detailed};
+      S.title='Circuit board';
+      S.scan=normalise(JSON.parse(JSON.stringify(S.raw)));
+      renderResult();
+    }
+    S.raw.components=[...S.acc];
+    if(pr.status==='rejected'){ S.raw._partsError = pr.reason?.message || 'unknown error'; S.lastDebug = pr.reason?.debug; }
+    else if(pr.value?._tileNote) S.raw._tileNote = pr.value._tileNote;
+    updateScan();
     saveCurrent();
-  }catch(e){ showError(e.message, e.debug); }
+    if(navigator.vibrate) try{ navigator.vibrate(30); }catch(e){}
+    toast(S.acc.length ? `Scan complete — ${S.acc.length} parts found` : 'Scan complete');
+  }catch(e){ if(token===S.scanToken) showError(e.message, e.debug); }
+  finally{ if(token===S.scanToken){ S.scanning=false; S.partsLoading=false; keepAwake(false); } }
+}
+
+/* Re-normalise after parts change, keeping zoom, selection and filters */
+function updateScan(){
+  if(!S.raw) return;
+  S.scan=normalise(JSON.parse(JSON.stringify(S.raw)));
+  if($('resultView').classList.contains('hidden')) return;
+  refresh(); renderPlaceNote();
+  if(!$('sheet').classList.contains('hidden')) updateNav();
 }
 
 async function getParts(content){
@@ -721,7 +853,7 @@ async function getParts(content){
     return await callClaude({system:SCAN_SYSTEM+PARTS_FOCUS, content, tool:PARTS_TOOL, maxTokens:8000});
   }catch(e){
     if(!e.truncated) throw e;
-    $('scanMsg').textContent='Lots of parts — re-checking the most important ones…';
+    setStatus('Lots of parts — re-checking the most important ones');
     return await callClaude({system:SCAN_SYSTEM+PARTS_FOCUS+'\nThis board is busy: list ONLY the 35 most repair-relevant parts this time.', content, tool:PARTS_TOOL, maxTokens:8000});
   }
 }
@@ -817,7 +949,11 @@ function renderResult(){
 }
 function renderPlaceNote(){
   const r=S.scan; const placed=r.components.length-r._unplaced;
-  $('placeNote').textContent = r._partsError ? `The parts list failed (${r._partsError}). Sections are shown — tap ＋ New to try again.` :
+  const pn=$('placeNote');
+  pn.classList.toggle('loadingDots', !!S.partsLoading);
+  pn.style.color = S.partsLoading ? 'var(--accent)' : 'var(--warn)';
+  if(S.partsLoading){ pn.textContent = `⏳ ${S.partsStatus||'Finding parts'}${r.components.length?` — ${r.components.length} so far`:''}`; return; }
+  pn.textContent = r._partsError ? `The parts list failed (${r._partsError}). Sections are shown — tap ＋ New to try again.` :
     !r.components.length ? 'No parts were returned for this photo — try again, or a closer photo.' :
     [r._tileNote, r._unplaced ? `${placed} of ${r.components.length} parts could be placed on the photo; the rest are in the list below.` : ''].filter(Boolean).join(' ');
   try{ $('rawData').textContent=JSON.stringify(S.raw ?? r, null, 2); }catch(e){}
@@ -878,11 +1014,20 @@ function renderList(){
 function refresh(){ renderLegend(); renderOverlay(); renderList(); }
 
 /* ---------- zoom ---------- */
-function setZoom(z){ S.zoom=Math.max(1,Math.min(4,z)); $('board').style.width=(S.zoom*100)+'%'; $('zoomLbl').textContent=Math.round(S.zoom*100)+'%'; }
+const ZMAX=6;
+function setZoom(z){ S.zoom=Math.max(1,Math.min(ZMAX,z)); $('board').style.width=(S.zoom*100)+'%'; $('zoomLbl').textContent=Math.round(S.zoom*100)+'%'; }
+/* zoom keeping the point under (clientX, clientY) fixed */
+function zoomAt(z, clientX, clientY){
+  const sc=$('scroller'), rc=sc.getBoundingClientRect();
+  const ox=clientX-rc.left, oy=clientY-rc.top;
+  const bx=(sc.scrollLeft+ox)/S.zoom, by=(sc.scrollTop+oy)/S.zoom;
+  setZoom(z);
+  sc.scrollLeft=bx*S.zoom-ox; sc.scrollTop=by*S.zoom-oy;
+}
 
 function focusPart(p){
   if(!p.box) return;
-  if(S.zoom<2) setZoom(2);
+  if(S.zoom<2) setZoom(2.5);
   requestAnimationFrame(()=>{
     const sc=$('scroller'), b=$('board');
     const cx=(p.box[0]+p.box[2]/2)/1000*b.clientWidth, cy=(p.box[1]+p.box[3]/2)/1000*b.clientHeight;
@@ -891,6 +1036,25 @@ function focusPart(p){
 }
 
 /* ---------- part detail ---------- */
+function visibleParts(){
+  const q=$('partSearch').value.trim().toLowerCase();
+  return S.scan.components.filter(p=>{
+    if(S.filter && p.section_id!==S.filter) return false;
+    if(!q) return true;
+    return [p.name,p.ref,p.type,p.markings,p.value,p.role].join(' ').toLowerCase().includes(q);
+  });
+}
+function updateNav(){
+  const list=visibleParts(), i=list.findIndex(p=>p.id===S.selected);
+  $('pPos').textContent = i>=0 ? `${i+1}/${list.length}` : '';
+  $('prevPart').disabled = i<=0; $('nextPart').disabled = i<0 || i>=list.length-1;
+}
+function gotoPart(delta){
+  const list=visibleParts(), i=list.findIndex(p=>p.id===S.selected);
+  const next=list[i+delta]; if(!next) return;
+  const body=$('pBody'); body.classList.remove('swapL','swapR'); void body.offsetWidth; body.classList.add(delta>0?'swapL':'swapR');
+  selectPart(next.id);
+}
 function selectPart(id, open=true){
   const p=S.scan.components.find(c=>c.id===id); if(!p) return;
   S.selected=id; renderOverlay(); renderList(); focusPart(p);
@@ -928,6 +1092,8 @@ function openPart(p){
   if(S.details[p.id]) renderDetail(S.details[p.id],p);
   else $('moreBtn').onclick=()=>loadDetail(p, crop);
   $('sheet').classList.remove('hidden'); $('sheetBg').classList.remove('hidden'); $('sheet').scrollTop=0;
+  $('sheet').style.transform='';
+  updateNav();
 }
 
 async function loadDetail(p, crop){
@@ -1123,6 +1289,7 @@ function demoData(){
 }
 
 function runDemo(){
+  S.scanToken=0; S.partsLoading=false; S.scanning=false;
   S.demo=true; S.details={}; S.raw=null; S.title=''; S.currentId=null;
   const url=demoSVG();
   $('boardImg').src=url;
@@ -1177,6 +1344,7 @@ async function renderSaved(){
 
 async function openSaved(id){
   const r=await dbGet(id); if(!r) return;
+  S.scanToken=0; S.partsLoading=false;
   S.demo=false; S.currentId=r.id; S.created=r.created; S.title=r.title; S.imageData=r.image; S.thumb=r.thumb;
   S.details=r.details||{}; S.raw=r.scan; $('note').value=r.note||'';
   $('boardImg').src=r.image;
@@ -1214,17 +1382,65 @@ $('errBack').onclick=()=>{ show('startView'); renderSaved(); };
 $('sheetClose').onclick=closeSheet; $('sheetBg').onclick=closeSheet;
 $('tgSections').onclick=e=>{ S.showSec=!S.showSec; e.target.classList.toggle('on',S.showSec); renderOverlay(); };
 $('tgParts').onclick=e=>{ S.showParts=!S.showParts; e.target.classList.toggle('on',S.showParts); renderOverlay(); };
-$('zoomIn').onclick=()=>setZoom(S.zoom+0.5);
-$('zoomOut').onclick=()=>setZoom(S.zoom-0.5);
+$('zoomLbl').onclick=()=>{ const sc=$('scroller'), rc=sc.getBoundingClientRect(); zoomAt(S.zoom>1.05?1:2.5, rc.left+rc.width/2, rc.top+rc.height/2); };
+$('prevPart').onclick=()=>gotoPart(-1);
+$('nextPart').onclick=()=>gotoPart(1);
+$('checkRetake').onclick=()=>{ show('startView'); $('cameraInput').click(); };
+
+/* ---------- gestures: pinch / double-tap on the board ---------- */
+(()=>{
+  const sc=$('scroller'); let pinch=null;
+  const dist=(a,b)=>Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+  sc.addEventListener('touchstart',e=>{
+    if(e.touches.length===2){ const [a,b]=e.touches; pinch={d:dist(a,b), z:S.zoom}; S.gestureAt=Date.now(); e.preventDefault(); }
+  },{passive:false});
+  sc.addEventListener('touchmove',e=>{
+    if(pinch && e.touches.length===2){
+      e.preventDefault(); const [a,b]=e.touches;
+      zoomAt(pinch.z*dist(a,b)/pinch.d, (a.clientX+b.clientX)/2, (a.clientY+b.clientY)/2);
+      S.gestureAt=Date.now();
+    }
+  },{passive:false});
+  sc.addEventListener('touchend',e=>{ if(e.touches.length<2) pinch=null; });
+  sc.addEventListener('wheel',e=>{ if(e.ctrlKey){ e.preventDefault(); zoomAt(S.zoom*(e.deltaY<0?1.15:0.87), e.clientX, e.clientY); } },{passive:false});
+})();
+
+/* ---------- gestures: swipe between parts, drag down to close ---------- */
+(()=>{
+  const sh=$('sheet'); let t0=null;
+  sh.addEventListener('touchstart',e=>{ if(e.touches.length!==1) return; const t=e.touches[0]; t0={x:t.clientX,y:t.clientY,top:sh.scrollTop,ts:Date.now(),mode:null}; },{passive:true});
+  sh.addEventListener('touchmove',e=>{
+    if(!t0) return; const t=e.touches[0], dx=t.clientX-t0.x, dy=t.clientY-t0.y;
+    if(!t0.mode){ if(Math.abs(dy)>12 && Math.abs(dy)>Math.abs(dx)*1.3 && dy>0 && t0.top<=0) t0.mode='down'; else if(Math.abs(dx)>12 && Math.abs(dx)>Math.abs(dy)*1.3) t0.mode='side'; else if(Math.abs(dy)>12) t0.mode='scroll'; }
+    if(t0.mode==='down'){ e.preventDefault(); sh.style.transform=`translateY(${Math.max(0,dy)}px)`; }
+  },{passive:false});
+  sh.addEventListener('touchend',e=>{
+    if(!t0) return; const t=e.changedTouches[0], dx=t.clientX-t0.x, dy=t.clientY-t0.y;
+    if(t0.mode==='down'){ if(dy>110) closeSheet(); sh.style.transform=''; }
+    else if(t0.mode==='side' && Math.abs(dx)>70) gotoPart(dx<0?1:-1);
+    t0=null;
+  });
+})();
 $('partSearch').oninput=renderList;
 $('legend').onclick=e=>{ const c=e.target.closest('[data-sec]'); if(!c) return; const id=c.dataset.sec||null; S.filter = (id && S.filter!==id) ? id : null; refresh(); };
 $('tgAdd').onclick=()=>setAddMode(!S.addMode);
 $('detailedChk').checked = store.get('detailed','0')==='1';
 $('detailedChk').onchange=e=>store.set('detailed', e.target.checked?'1':'0');
+let tapTimer=null, lastTap=null;
 $('board').onclick=e=>{
+  if(S.gestureAt && Date.now()-S.gestureAt<400) return;          // ignore the click that ends a pinch
   if(S.addMode){ const rc=$('board').getBoundingClientRect(); addPartAt((e.clientX-rc.left)/rc.width*1000, (e.clientY-rc.top)/rc.height*1000); return; }
   const p=e.target.closest('[data-part]'); if(p){ selectPart(p.dataset.part); return; }
-  const s=e.target.closest('[data-sec]'); if(s){ S.filter = S.filter===s.dataset.sec?null:s.dataset.sec; refresh(); }
+  // double-tap to zoom; single tap on a section filters it
+  const now=Date.now();
+  if(lastTap && now-lastTap.t<320 && Math.hypot(e.clientX-lastTap.x, e.clientY-lastTap.y)<40){
+    clearTimeout(tapTimer); lastTap=null;
+    zoomAt(S.zoom>1.4?1:2.5, e.clientX, e.clientY); return;
+  }
+  lastTap={t:now,x:e.clientX,y:e.clientY};
+  const secId = e.target.closest('[data-sec]')?.dataset.sec;
+  clearTimeout(tapTimer);
+  tapTimer=setTimeout(()=>{ lastTap=null; if(secId){ S.filter = S.filter===secId?null:secId; refresh(); } },320);
 };
 $('partList').onclick=e=>{ const p=e.target.closest('[data-part]'); if(p) selectPart(p.dataset.part); };
 $('copyDebug').onclick=()=>{ try{ navigator.clipboard.writeText($('errDebug').textContent); $('copyDebug').textContent='Copied'; }catch(e){} };
@@ -1233,6 +1449,7 @@ document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeSheet(); clo
 
 refreshHint();
 renderSaved();
+if('serviceWorker' in navigator && (location.protocol==='https:' || location.hostname==='127.0.0.1' || location.hostname==='localhost')) navigator.serviceWorker.register('sw.js').catch(()=>{});
 })();
 </script>
 </body>
